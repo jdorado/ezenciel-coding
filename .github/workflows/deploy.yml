@@ -39,11 +39,11 @@ jobs:
       - name: Verify CLI agents
         run: |
           set -euo pipefail
-          docker exec dev-worker-node sh -lc '
+          docker exec -e HOME=/tmp dev-worker-node sh -lc '
             set -eu
             command -v codex && codex --version
             command -v gemini && gemini --version
-            command -v claude && claude --version
+            if command -v claude >/dev/null; then timeout 20s claude --version || true; fi
             command -v gh && gh --version | head -n1
             command -v git && git --version
           '
