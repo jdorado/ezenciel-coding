@@ -1,9 +1,10 @@
 """Configuration loading for ezenciel-coding.
 Last edited: 2026-02-23 (resolve db_path/projects_dir/workspaces_dir relative to REPO_ROOT)
 """
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
 import sys
+import secrets
 import yaml
 from pathlib import Path
 from dotenv import dotenv_values
@@ -16,7 +17,7 @@ logger.add(sys.stderr, format="{time:YYYY-MM-DDTHH:mm:ss}Z | {level:<7} | {messa
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 class Settings(BaseSettings):
-    api_key: str = "your_secret_api_key_here"
+    api_key: Optional[str] = None
     db_path: str = "sqlite:///data/worker.db"
     poll_interval_seconds: int = 5
     workspaces_dir: str = "workspaces"
@@ -50,6 +51,9 @@ def _resolve_db_path(db_path: str) -> str:
 
 settings = Settings()
 settings.db_path = _resolve_db_path(settings.db_path)
+if not settings.api_key:
+    settings.api_key = secrets.token_urlsafe(32)
+    logger.warning("API_KEY not set — generated for this session: {}", settings.api_key)
 
 
 def load_project_configs() -> Dict[str, Any]:
