@@ -16,6 +16,7 @@ services:
       - /home/github-runner/.claude.json:/root/.claude.json
     env_file:
       - .env
+    userns_mode: "host"
     restart: unless-stopped
 
 volumes:
