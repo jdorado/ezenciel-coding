@@ -9,14 +9,11 @@ jobs:
     runs-on: [self-hosted, dev-worker]
 
     steps:
-      - name: Clean root-owned dirs
+      - name: Clean workspace
         run: |
-          # The previous container may still be running with volumes mounted,
-          # preventing the deletion of host directories.
           docker-compose down || true
-          docker ps -q | xargs -r docker rm -f || true
           sudo rm -rf workspaces projects || true
-          docker run --rm -v "$PWD:/work" alpine sh -c "rm -rf /work/workspaces /work/projects" || true
+
       - name: Checkout code
         uses: actions/checkout@v4
 
