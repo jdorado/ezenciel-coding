@@ -10,7 +10,9 @@ jobs:
 
     steps:
       - name: Clean root-owned dirs
-        run: sudo rm -rf workspaces projects || true
+        run: |
+          sudo rm -rf workspaces projects || true
+          docker run --rm -v "$PWD:/work" alpine rm -rf /work/workspaces /work/projects || true
 
       - name: Checkout code
         uses: actions/checkout@v4
