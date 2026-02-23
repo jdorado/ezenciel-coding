@@ -7,6 +7,7 @@ on:
 jobs:
   deploy:
     runs-on: [self-hosted, dev-worker]
+    environment: production
 
     steps:
       - name: Checkout code
@@ -14,27 +15,6 @@ jobs:
 
       - name: Remove old images
         run: docker image prune -f
-
-      - name: Load runtime env
-        run: |
-          set -euo pipefail
-          SRC_ENV_FILE="/etc/dev-worker/runtime.env"
-          if ! test -f "${SRC_ENV_FILE}"; then
-            echo "Missing runtime env file: ${SRC_ENV_FILE}"
-            exit 1
-          fi
-          ENV_FILE="${RUNNER_TEMP:-/tmp}/dev-worker-runtime.env"
-          RUNNER_UID="$(id -u)"
-          RUNNER_GID="$(id -g)"
-          docker run --rm \
-            --userns=host \
-            -e RUNNER_UID="${RUNNER_UID}" \
-            -e RUNNER_GID="${RUNNER_GID}" \
-            -v "${SRC_ENV_FILE}:/vm/runtime.env:ro" \
-            -v "${RUNNER_TEMP:-/tmp}:/runner-temp" \
-            alpine:3.20 \
-            sh -lc "cp /vm/runtime.env /runner-temp/dev-worker-runtime.env && chown ${RUNNER_UID}:${RUNNER_GID} /runner-temp/dev-worker-runtime.env && chmod 600 /runner-temp/dev-worker-runtime.env"
-          echo "RUNTIME_ENV_FILE=${ENV_FILE}" >> "${GITHUB_ENV}"
 
       - name: Build image
         run: docker compose build
@@ -44,9 +24,8 @@ jobs:
           API_KEY: ${{ secrets.API_KEY }}
         run: |
           set -euo pipefail
-          cp "${RUNTIME_ENV_FILE}" .env
           if [ -n "${API_KEY}" ]; then
-            echo "API_KEY=${API_KEY}" >> .env
+            echo "API_KEY=${API_KEY}" > .env
           fi
           docker compose up -d
 
