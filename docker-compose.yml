@@ -13,6 +13,7 @@ services:
       - /home/github-runner/.codex:/root/.codex
       - /home/github-runner/.gemini:/root/.gemini
       - /home/github-runner/.claude:/root/.claude
+      - /home/github-runner/.claude.json:/root/.claude.json
     env_file:
       - .env
     restart: unless-stopped
