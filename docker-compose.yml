@@ -1,0 +1,14 @@
+# Updated: 2026-02-23
+services:
+  dev-worker:
+    build: .
+    container_name: dev-worker-node
+    ports:
+      - "5100:8080"
+    volumes:
+      - ./data:/app/data
+      - ./projects:/app/projects
+      - ./workspaces:/app/workspaces
+    env_file:
+      - .env
+    restart: unless-stopped

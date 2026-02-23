@@ -1,0 +1,5 @@
+repository_url: "git@github.com:dummy/dummy-repo.git"
+cli_client: "codex"
+cli_model: "gpt-4o"
+cli_effort: "high"
+cli_flags: "--yes --force"

@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+.env
+.venv
+.vscode
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# SQLite
+data/
+
+# Workspaces
+workspaces/
+
+# Projects except dummy-repo
+projects/*
+!projects/dummy-repo/
+projects/dummy-repo/.env.sample
