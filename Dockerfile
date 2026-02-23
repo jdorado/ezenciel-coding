@@ -17,17 +17,21 @@ RUN set -euo pipefail \
       git \
       openssh-client \
       curl \
-      ca-certificates \
       nodejs \
       npm \
+      procps \
+      ca-certificates \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
     && apt-get install -y gh \
+    && if ! command -v yarn >/dev/null 2>&1; then npm install -g yarn; fi \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Poetry install
 RUN pip install --no-cache-dir poetry
+
+# Python deps
 COPY pyproject.toml poetry.lock* ./
 RUN poetry install --only main --no-interaction --no-ansi --no-root
 

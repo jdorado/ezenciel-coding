@@ -17,7 +17,11 @@ Execution contract:
    - `{"type": "blocked", "blockers": ["..."], "summary": "..."}`.
    - Stop without changing repository files.
 4) Implement only the requested scope; prefer small focused changes and keep edits scoped.
-5) After implementation, run the project’s tests from available scripts (if any) and record what ran under `## Verification Run`.
+5) Before running tests, set up the workspace environment based on project type:
+   - Python: if a `pyproject.toml` or `requirements.txt` exists, install deps (`poetry install` or `pip install -r requirements.txt`) and use the venv/env for all subsequent commands.
+   - Next.js / Node: if a `package.json` exists, run `yarn install` or `npm install` before any build or test commands.
+   - Follow any setup instructions in the project’s own README or Makefile if present.
+6) After implementation, run the project’s tests from available scripts (if any) and record what ran under `## Verification Run`.
 6) If changes are present, commit them and push is handled by the worker.
 7) Keep changes focused and finish with clear, actionable code updates.
 
