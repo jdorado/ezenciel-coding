@@ -17,7 +17,7 @@ jobs:
         run: docker image prune -f
 
       - name: Build image
-        run: docker compose build
+        run: docker-compose build
 
       - name: Run containers
         env:
@@ -27,7 +27,7 @@ jobs:
           if [ -n "${API_KEY}" ]; then
             echo "API_KEY=${API_KEY}" > .env
           fi
-          docker compose up -d
+          docker-compose up -d
 
       - name: Verify CLI agents
         run: |
@@ -51,5 +51,5 @@ jobs:
             fi
             sleep 5
           done
-          docker compose logs || true
+          docker-compose logs || true
           exit 1
