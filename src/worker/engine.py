@@ -118,9 +118,31 @@ class WorkerEngine:
 
     def _run_loop(self):
         while self.is_running:
+            self._recover_stale_jobs()
             self._print_heartbeat()
             self._process_next_job()
             time.sleep(settings.poll_interval_seconds)
+
+    def _recover_stale_jobs(self):
+        db = SessionLocal()
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.job_timeout_minutes)
+            stale = (
+                db.query(Job)
+                .filter(Job.status == "in_progress")
+                .filter(Job.started_at <= cutoff)
+                .all()
+            )
+            for job in stale:
+                logger.warning("[job:{}] stale — no heartbeat for {}m, marking failed", job.id, settings.job_timeout_minutes)
+                job.status = "failed"
+                job.phase = "done"
+                job.result = {"type": "failed", "error": f"Job timed out after {settings.job_timeout_minutes} minutes (worker likely crashed)", "error_type": "Timeout"}
+                job.completed_at = datetime.now(timezone.utc)
+            if stale:
+                db.commit()
+        finally:
+            db.close()
 
     def _print_heartbeat(self):
         db = SessionLocal()

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     git_user_email: str = "devworker@ezenciel.ai"
     job_max_retries: int = 3
     job_retry_delay_minutes: int = 15
+    job_timeout_minutes: int = 120
     
     class Config:
         env_file = str(REPO_ROOT / ".env")
