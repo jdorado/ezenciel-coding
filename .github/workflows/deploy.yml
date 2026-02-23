@@ -1,3 +1,4 @@
+# Updated: 2026-02-23
 name: Deploy
 
 on:
@@ -21,7 +22,12 @@ jobs:
         run: docker image prune -f
 
       - name: Build image
-        run: docker-compose build
+        env:
+          DOCKER_CONFIG: /tmp/.docker
+          HOME: /tmp
+        run: |
+          mkdir -p /tmp/.docker/buildx
+          docker-compose build
 
       - name: Run containers
         env:
