@@ -1,4 +1,5 @@
 # ezenciel-coding
+<!-- Updated: 2026-02-23 -->
 
 REST API + worker that runs AI coding agents (codex, gemini, claude) against your repos.
 
@@ -47,6 +48,16 @@ claude login
 ```
 
 Once authenticated, run `./setup-creds.sh` to verify, then `docker-compose up` will mount those directories into the container automatically.
+
+### Quick login verification
+
+Before running jobs, you can smoke-test the synced auth in the worker container:
+
+```bash
+docker-compose exec -T dev-worker-node sh -lc "claude -p 'say ok'"
+docker-compose exec -T dev-worker-node sh -lc "codex --version"
+docker-compose exec -T dev-worker-node sh -lc "gemini --yolo 'say ok'"
+```
 
 ## Register a project
 
