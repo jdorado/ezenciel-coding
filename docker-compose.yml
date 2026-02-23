@@ -6,7 +6,7 @@ services:
     ports:
       - "5100:8080"
     volumes:
-      - ./data:/app/data
+      - dev-worker-data:/app/data
       - ./projects:/app/projects
       - ./workspaces:/app/workspaces
       # CLI agent credentials (mount from host after authenticating locally)
@@ -16,3 +16,6 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+
+volumes:
+  dev-worker-data:
