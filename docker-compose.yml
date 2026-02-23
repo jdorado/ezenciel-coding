@@ -10,9 +10,9 @@ services:
       - ./projects:/app/projects
       - ./workspaces:/app/workspaces
       # CLI agent credentials (mount from host after authenticating locally)
-      - ~/.codex:/root/.codex
-      - ~/.gemini:/root/.gemini
-      - ~/.claude:/root/.claude
+      - /home/github-runner/.codex:/root/.codex
+      - /home/github-runner/.gemini:/root/.gemini
+      - /home/github-runner/.claude:/root/.claude
     env_file:
       - .env
     restart: unless-stopped
