@@ -44,19 +44,28 @@ gemini login
 ```bash
 npm install -g @anthropic-ai/claude-code
 claude login
-# Credentials stored in ~/.claude/
+# Credentials natively tied to your local OS Keychain (can't be synced via secure copy)
 ```
 
-Once authenticated, run `./setup-creds.sh` to verify, then `docker-compose up` will mount those directories into the container automatically.
+Once authenticated, run `./scripts/sync_creds.sh` to copy `codex` and `gemini` credentials to your VM, then `docker-compose up` will mount those directories into the container.
+
+**Important for Remote VM Deployments (Claude Code only):** 
+Because Claude stores authentication tokens securely in the host OS Keychain, copying `~/.claude.json` from a Mac to a Linux VM will **not** transfer the login session. When running `dev-worker-node` on a remote Linux server via Docker, you must initialize a one-time login for Claude interactively from within the running container:
+
+```bash
+# SSH into your VM and run this command:
+docker exec -it dev-worker-node claude auth login
+```
+*(Complete the browser login link provided in the terminal to finish setup)*
 
 ### Quick login verification
 
 Before running jobs, you can smoke-test the synced auth in the worker container:
 
 ```bash
-docker-compose exec -T dev-worker-node sh -lc "claude -p 'say ok'"
-docker-compose exec -T dev-worker-node sh -lc "codex --version"
-docker-compose exec -T dev-worker-node sh -lc "gemini --yolo 'say ok'"
+docker exec -it dev-worker-node "claude -p 'say ok'"
+docker exec dev-worker-node sh -lc "codex --version"
+docker exec dev-worker-node sh -lc "gemini --yolo 'say ok'"
 ```
 
 ## Register a project
