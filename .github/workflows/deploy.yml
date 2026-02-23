@@ -7,7 +7,6 @@ on:
 jobs:
   deploy:
     runs-on: [self-hosted, dev-worker]
-    environment: production
 
     steps:
       - name: Checkout code
