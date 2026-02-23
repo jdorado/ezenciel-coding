@@ -19,6 +19,33 @@ Or with Docker:
 docker-compose up --build -d
 ```
 
+## CLI Agent Credentials
+
+The worker runs codex, gemini, or claude depending on your project config. Authenticate each agent on the **host machine** before starting the container — Docker mounts your credential directories at runtime.
+
+### Codex
+```bash
+npm install -g @openai/codex
+codex login
+# Credentials stored in ~/.codex/
+```
+
+### Gemini
+```bash
+npm install -g @google/gemini-cli
+gemini login
+# Credentials stored in ~/.gemini/
+```
+
+### Claude
+```bash
+npm install -g @anthropic-ai/claude-code
+claude login
+# Credentials stored in ~/.claude/
+```
+
+Once authenticated, run `./setup-creds.sh` to verify, then `docker-compose up` will mount those directories into the container automatically.
+
 ## Register a project
 
 Create a directory under `projects/` with a `config.yaml`:

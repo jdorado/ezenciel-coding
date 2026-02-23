@@ -9,6 +9,10 @@ services:
       - ./data:/app/data
       - ./projects:/app/projects
       - ./workspaces:/app/workspaces
+      # CLI agent credentials (mount from host after authenticating locally)
+      - ~/.codex:/root/.codex
+      - ~/.gemini:/root/.gemini
+      - ~/.claude:/root/.claude
     env_file:
       - .env
     restart: unless-stopped
