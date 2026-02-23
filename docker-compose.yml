@@ -7,8 +7,8 @@ services:
       - "5100:8080"
     volumes:
       - dev-worker-data:/app/data
-      - ./projects:/app/projects
-      - ./workspaces:/app/workspaces
+      - dev-worker-projects:/app/projects
+      - dev-worker-workspaces:/app/workspaces
       # CLI agent credentials (mount from host after authenticating locally)
       - /home/github-runner/.codex:/root/.codex
       - /home/github-runner/.gemini:/root/.gemini
@@ -19,3 +19,5 @@ services:
 
 volumes:
   dev-worker-data:
+  dev-worker-projects:
+  dev-worker-workspaces:
