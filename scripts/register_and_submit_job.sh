@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Register a project and submit a job from local project files.
-# Date edited: 2026-02-25
+# Date edited: 2026-02-25 (default project path made public-safe)
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_DIR="${ROOT_DIR}/projects/stocks"
+PROJECT_DIR="${ROOT_DIR}/projects/dummy-repo"
 PROJECT_ID_OVERRIDE=""
 API_URL_OVERRIDE=""
 API_KEY_OVERRIDE=""
@@ -137,6 +137,8 @@ register_payload: dict[str, Any] = {
     "cli_model": config_data.get("cli_model"),
     "cli_effort": config_data.get("cli_effort"),
     "cli_flags": config_data.get("cli_flags"),
+    "callback_url": config_data.get("callback_url"),
+    "callback_secret": config_data.get("callback_secret"),
     "system_instructions": system_instructions if system_instructions else None,
     "env_vars": env_vars,
 }
@@ -214,4 +216,3 @@ JOB_STATUS="$(poetry run python -c 'import json,sys;print((json.load(open(sys.ar
 
 echo "Job submitted: id=${JOB_ID} status=${JOB_STATUS}"
 echo "Inspect: curl -H \"X-API-Key: <key>\" ${API_URL}/api/v1/jobs/${JOB_ID}"
-

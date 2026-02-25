@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-25 (codex logs now keep reasoning/thinking lines only)
+Last edited: 2026-02-25 (project-level callback secret headers)
 """
 from __future__ import annotations
 
@@ -143,23 +143,75 @@ def _is_codex_json_command(cmd: list[str]) -> bool:
     return len(cmd) >= 2 and cmd[0] == "codex" and cmd[1] == "exec" and "--json" in cmd
 
 
-def _extract_codex_reasoning_line(raw_line: str) -> Optional[str]:
+def _extract_codex_json_payload(raw_line: str) -> Optional[dict]:
     stripped = raw_line.strip()
     if not stripped.startswith("{"):
         return None
     try:
-        payload = json.loads(stripped)
+        return json.loads(stripped)
     except json.JSONDecodeError:
         return None
 
+
+def _extract_codex_item_text(item: dict) -> Optional[str]:
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    if isinstance(text, list):
+        parts: list[str] = []
+        for chunk in text:
+            if isinstance(chunk, str) and chunk.strip():
+                parts.append(chunk.strip())
+            elif isinstance(chunk, dict):
+                chunk_text = chunk.get("text")
+                if isinstance(chunk_text, str) and chunk_text.strip():
+                    parts.append(chunk_text.strip())
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
+def _extract_codex_reasoning_line(raw_line: str) -> Optional[str]:
+    payload = _extract_codex_json_payload(raw_line)
+    if payload is None:
+        return None
     if payload.get("type") != "item.completed":
         return None
     item = payload.get("item")
     if not isinstance(item, dict) or item.get("type") != "reasoning":
         return None
-    text = item.get("text")
-    if isinstance(text, str) and text.strip():
-        return text.strip()
+    return _extract_codex_item_text(item)
+
+
+def _extract_codex_agent_message_line(raw_line: str) -> Optional[str]:
+    payload = _extract_codex_json_payload(raw_line)
+    if payload is None:
+        return None
+    if payload.get("type") != "item.completed":
+        return None
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "agent_message":
+        return None
+    return _extract_codex_item_text(item)
+
+
+def _extract_codex_error_line(raw_line: str) -> Optional[str]:
+    payload = _extract_codex_json_payload(raw_line)
+    if payload is None:
+        return None
+    if payload.get("type") == "error":
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return None
+    if payload.get("type") != "item.completed":
+        return None
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "error":
+        return None
+    message = item.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
     return None
 
 
@@ -607,6 +659,8 @@ class WorkerEngine:
 
         output_parts: list[str] = []
         codex_diagnostics: list[str] = []
+        codex_assistant_fallback: list[str] = []
+        saw_codex_thinking = False
         last_cancel_check = time.time()
 
         while True:
@@ -631,10 +685,24 @@ class WorkerEngine:
 
             safe_line = _redact(line.rstrip())
             if codex_json_mode:
-                thinking = _extract_codex_reasoning_line(safe_line)
+                thinking = _extract_codex_reasoning_line(line.rstrip())
                 if thinking is not None:
-                    output_parts.append(f"[thinking] {thinking}\n")
-                    logger.info("[thinking] {}", thinking)
+                    redacted_thinking = _redact(thinking)
+                    output_parts.append(f"[thinking] {redacted_thinking}\n")
+                    logger.info("[thinking] {}", redacted_thinking)
+                    saw_codex_thinking = True
+                    continue
+
+                codex_error = _extract_codex_error_line(line.rstrip())
+                if codex_error is not None:
+                    redacted_error = _redact(codex_error)
+                    output_parts.append(f"[codex-error] {redacted_error}\n")
+                    logger.info("[codex-error] {}", redacted_error)
+                    continue
+
+                agent_message = _extract_codex_agent_message_line(line.rstrip())
+                if agent_message is not None:
+                    codex_assistant_fallback.append(_redact(agent_message))
                 elif safe_line:
                     # Keep non-reasoning lines only for failure diagnostics.
                     codex_diagnostics.append(safe_line)
@@ -646,6 +714,10 @@ class WorkerEngine:
             logger.info(safe_line)
 
         return_code = proc.wait()
+        if codex_json_mode and not saw_codex_thinking and codex_assistant_fallback:
+            for fallback in codex_assistant_fallback:
+                output_parts.append(f"[assistant] {fallback}\n")
+                logger.info("[assistant] {}", fallback)
         output = "".join(output_parts)
 
         if output.strip():
@@ -667,6 +739,10 @@ class WorkerEngine:
             return
 
         try:
+            projects = load_project_configs()
+            project_id = job.get("project_id")
+            project = projects.get(project_id) if isinstance(project_id, str) else None
+            callback_secret = project.get("callback_secret") if isinstance(project, dict) else None
             completed_at = job.get("completed_at")
             payload = {
                 "id": job.get("id"),
@@ -678,7 +754,10 @@ class WorkerEngine:
                 "completed_at": completed_at.isoformat() if completed_at else None,
                 "result": job.get("result"),
             }
-            httpx.post(callback_url, json=payload, timeout=5.0)
+            headers = {"Content-Type": "application/json"}
+            if isinstance(callback_secret, str) and callback_secret.strip():
+                headers["X-Webhook-Secret"] = callback_secret.strip()
+            httpx.post(callback_url, json=payload, headers=headers, timeout=5.0)
             logger.info("Sent callback to {}", callback_url)
         except Exception as exc:
             logger.error("Failed to send callback for job {}: {}", job.get("id"), exc)

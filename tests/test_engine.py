@@ -1,10 +1,11 @@
 """Worker engine tests.
-Last edited: 2026-02-25 (cover codex thinking-only log filtering behavior)
+Last edited: 2026-02-25 (public-safe generic callback URL examples)
 """
 from __future__ import annotations
 
 import os
 import shutil
+from datetime import datetime
 from unittest.mock import call
 
 import pytest
@@ -14,6 +15,8 @@ from src.database.session import SessionLocal, engine
 from src.models.job import Base, Job
 from src.worker.engine import (
     WorkerEngine,
+    _extract_codex_agent_message_line,
+    _extract_codex_error_line,
     _build_agent_command,
     _extract_codex_reasoning_line,
     _is_codex_json_command,
@@ -183,7 +186,82 @@ def test_extract_codex_reasoning_line_ignores_non_reasoning() -> None:
     assert _extract_codex_reasoning_line(raw) is None
 
 
+def test_extract_codex_reasoning_line_reads_text_list_chunks() -> None:
+    raw = '{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":[{"type":"output_text","text":"step 1"},{"type":"output_text","text":"step 2"}]}}'
+    assert _extract_codex_reasoning_line(raw) == "step 1\nstep 2"
+
+
+def test_extract_codex_agent_message_line_reads_agent_message() -> None:
+    raw = '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"done"}}'
+    assert _extract_codex_agent_message_line(raw) == "done"
+
+
+def test_extract_codex_error_line_reads_top_level_error() -> None:
+    raw = '{"type":"error","message":"model unavailable"}'
+    assert _extract_codex_error_line(raw) == "model unavailable"
+
+
+def test_extract_codex_error_line_reads_item_error() -> None:
+    raw = '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"bad auth"}}'
+    assert _extract_codex_error_line(raw) == "bad auth"
+
+
 def test_is_codex_json_command_only_for_codex_exec_json() -> None:
     assert _is_codex_json_command(["codex", "exec", "--json", "x"]) is True
     assert _is_codex_json_command(["codex", "exec", "x"]) is False
     assert _is_codex_json_command(["claude", "-p", "x"]) is False
+
+
+def test_send_callback_includes_shared_secret_header(mocker) -> None:
+    worker = WorkerEngine(repository=SQLiteJobRepository())
+    mocked_post = mocker.patch("src.worker.engine.httpx.post")
+    mocker.patch(
+        "src.worker.engine.load_project_configs",
+        return_value={"test_dummy": {"callback_secret": "shared-secret"}},
+    )
+
+    worker._send_callback(
+        {
+            "id": "job-1",
+            "project_id": "test_dummy",
+            "status": "success",
+            "phase": "done",
+            "worker_id": "worker-a",
+            "branch_name": "worker/job-1",
+            "completed_at": datetime(2026, 2, 25, 10, 0, 0),
+            "callback_url": "https://agents.example.com/agents/devjob-webhook",
+            "result": {"pr_url": "https://github.com/acme/repo/pull/1"},
+        }
+    )
+
+    mocked_post.assert_called_once()
+    kwargs = mocked_post.call_args.kwargs
+    assert kwargs["headers"]["Content-Type"] == "application/json"
+    assert kwargs["headers"]["X-Webhook-Secret"] == "shared-secret"
+
+
+def test_send_callback_omits_secret_header_when_project_secret_missing(mocker) -> None:
+    worker = WorkerEngine(repository=SQLiteJobRepository())
+    mocked_post = mocker.patch("src.worker.engine.httpx.post")
+    mocker.patch(
+        "src.worker.engine.load_project_configs",
+        return_value={"test_dummy": {}},
+    )
+
+    worker._send_callback(
+        {
+            "id": "job-2",
+            "project_id": "test_dummy",
+            "status": "failed",
+            "phase": "done",
+            "worker_id": "worker-b",
+            "branch_name": "worker/job-2",
+            "completed_at": datetime(2026, 2, 25, 11, 0, 0),
+            "callback_url": "https://agents.example.com/agents/devjob-webhook",
+            "result": {"summary": "failure"},
+        }
+    )
+
+    mocked_post.assert_called_once()
+    kwargs = mocked_post.call_args.kwargs
+    assert kwargs["headers"] == {"Content-Type": "application/json"}
