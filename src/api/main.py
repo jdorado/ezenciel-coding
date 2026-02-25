@@ -1,5 +1,5 @@
 """ezenciel-coding API entrypoint.
-Last edited: 2026-02-25 (derive job target branch from project registration record)
+Last edited: 2026-02-25 (default missing project target_branch to main at job submission)
 """
 import os
 from pathlib import Path
@@ -265,17 +265,10 @@ def submit_job(
         raise HTTPException(status_code=400, detail=f"Project '{request.project_id}' not registered.")
     if not project.get("repository_url"):
         raise HTTPException(status_code=400, detail=f"Project '{request.project_id}' has no repository_url configured.")
-    target_branch = project.get("target_branch")
-    if not isinstance(target_branch, str) or not target_branch.strip():
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Project '{request.project_id}' has no target_branch configured. "
-                "Re-register the project with target_branch."
-            ),
-        )
+    target_branch_raw = project.get("target_branch")
+    target_branch = target_branch_raw.strip() if isinstance(target_branch_raw, str) and target_branch_raw.strip() else "main"
 
-    payload = _build_job_submit_payload(request, target_branch=target_branch.strip())
+    payload = _build_job_submit_payload(request, target_branch=target_branch)
     return repo.create(payload)
 
 

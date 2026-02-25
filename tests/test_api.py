@@ -1,5 +1,5 @@
 """API tests for job submission and project registration.
-Last edited: 2026-02-25 (job target_branch resolved from project registration)
+Last edited: 2026-02-25 (missing project target_branch defaults to main on submit)
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def setup_module(module):
     Base.metadata.create_all(bind=engine)
     _build_repository.cache_clear()
 
-    for project_id in ("dummy", "dummy-dev", "project-api", "project-api-default-system"):
+    for project_id in ("dummy", "dummy-dev", "dummy-no-branch", "project-api", "project-api-default-system"):
         path = _project_path(project_id)
         if path.exists():
             shutil.rmtree(path)
@@ -57,9 +57,17 @@ def setup_module(module):
             'cli_client: "codex"\n'
         )
 
+    no_branch_path = _project_path("dummy-no-branch")
+    no_branch_path.mkdir(parents=True, exist_ok=True)
+    with (no_branch_path / "config.yaml").open("w", encoding="utf-8") as handle:
+        handle.write(
+            'repository_url: "dummy-no-branch"\n'
+            'cli_client: "codex"\n'
+        )
+
 
 def teardown_module(module):
-    for project_id in ("dummy", "dummy-dev", "project-api", "project-api-default-system"):
+    for project_id in ("dummy", "dummy-dev", "dummy-no-branch", "project-api", "project-api-default-system"):
         path = _project_path(project_id)
         if path.exists():
             shutil.rmtree(path)
@@ -143,6 +151,17 @@ def test_submit_job_uses_project_target_branch() -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["target_branch"] == "dev"
+
+
+def test_submit_job_defaults_target_branch_to_main_when_project_config_missing() -> None:
+    response = client.post(
+        "/api/v1/jobs",
+        json={"project_id": "dummy-no-branch", "prd_content": "Use default branch when missing in config."},
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["target_branch"] == "main"
 
 
 def test_register_project_success() -> None:
