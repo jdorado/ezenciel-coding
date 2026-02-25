@@ -1,5 +1,5 @@
 """API tests for job submission and project registration.
-Last edited: 2026-02-25 (remove callback fields from API contract coverage)
+Last edited: 2026-02-25 (enforce registration-time QA system instructions)
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src.api.main import app
+from src.api.main import app, _SYSTEM_INSTRUCTIONS_QA_HEADER, _build_registered_system_instructions
 from src.config import _resolve_dir, settings
 from src.database.repository import _build_repository
 from src.database.session import SessionLocal, engine
@@ -34,7 +34,7 @@ def setup_module(module):
     Base.metadata.create_all(bind=engine)
     _build_repository.cache_clear()
 
-    for project_id in ("dummy", "project-api"):
+    for project_id in ("dummy", "project-api", "project-api-default-system"):
         path = _project_path(project_id)
         if path.exists():
             shutil.rmtree(path)
@@ -49,7 +49,7 @@ def setup_module(module):
 
 
 def teardown_module(module):
-    for project_id in ("dummy", "project-api"):
+    for project_id in ("dummy", "project-api", "project-api-default-system"):
         path = _project_path(project_id)
         if path.exists():
             shutil.rmtree(path)
@@ -125,6 +125,8 @@ def test_register_project_success() -> None:
     data = response.json()
     assert data["project_id"] == "project-api"
     assert data["repository_url"] == payload["repository_url"]
+    assert payload["system_instructions"] in data["system_instructions"]
+    assert _SYSTEM_INSTRUCTIONS_QA_HEADER in data["system_instructions"]
     assert "env_vars" not in data
     assert "callback_url" not in data
 
@@ -132,6 +134,33 @@ def test_register_project_success() -> None:
     assert (project_path / "config.yaml").exists()
     assert (project_path / ".env").exists()
     assert (project_path / "system.md").exists()
+    persisted_system = (project_path / "system.md").read_text(encoding="utf-8")
+    assert payload["system_instructions"] in persisted_system
+    assert _SYSTEM_INSTRUCTIONS_QA_HEADER in persisted_system
+
+
+def test_register_project_injects_default_system_instructions_when_missing() -> None:
+    payload = {
+        "project_id": "project-api-default-system",
+        "repository_url": "https://github.com/example/project-api-default-system.git",
+        "cli_client": "codex",
+        "env_vars": {},
+    }
+
+    response = client.post("/api/v1/projects", json=payload, headers=_headers())
+    assert response.status_code == 201
+    data = response.json()
+    assert _SYSTEM_INSTRUCTIONS_QA_HEADER in data["system_instructions"]
+
+    project_path = _project_path("project-api-default-system")
+    persisted_system = (project_path / "system.md").read_text(encoding="utf-8")
+    assert _SYSTEM_INSTRUCTIONS_QA_HEADER in persisted_system
+
+
+def test_build_registered_system_instructions_avoids_duplicate_contract() -> None:
+    existing = f"Use strict test workflow.\n\n{_SYSTEM_INSTRUCTIONS_QA_HEADER}\nAlready present."
+    merged = _build_registered_system_instructions(existing)
+    assert merged.count(_SYSTEM_INSTRUCTIONS_QA_HEADER) == 1
 
 
 def test_register_project_rejects_legacy_callback_fields() -> None:

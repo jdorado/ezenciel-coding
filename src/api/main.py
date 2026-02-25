@@ -1,5 +1,5 @@
 """ezenciel-coding API entrypoint.
-Last edited: 2026-02-25 (remove DevJob callback contract fields)
+Last edited: 2026-02-25 (enforce QA system instructions on project registration)
 """
 import os
 from pathlib import Path
@@ -116,6 +116,36 @@ class ProjectResponse(BaseModel):
 
 
 _TERMINAL_STATUSES = {"success", "failed", "blocked", "cancelled"}
+_SYSTEM_INSTRUCTIONS_QA_HEADER = "## Mandatory QA Evidence Contract"
+_SYSTEM_INSTRUCTIONS_QA_CONTRACT = f"""{_SYSTEM_INSTRUCTIONS_QA_HEADER}
+
+Treat PRD acceptance criteria as executable validation requirements, not prose.
+
+1. Reproduce first:
+- Before fixing, run a realistic runtime check that exercises the behavior through production-facing entry points.
+- Prefer scripts such as `scripts/run_agent.py` or `scripts/run_tool.py` when those exist.
+
+2. Validate after fix:
+- Re-run the same realistic runtime check after code changes.
+- Run focused automated tests for touched behavior.
+
+3. Evidence is required:
+- In the final report, include a `QA Evidence` section with exact commands and whether each passed or failed.
+- If runtime artifacts/log files are produced, include their paths.
+
+4. No fake confidence:
+- Do not claim "fixed" without at least one real runtime verification command and one automated test command.
+- If required runtime verification cannot run (missing credentials/dependencies), write `.worker_result.json` with `type=blocked` and the missing prerequisite.
+"""
+
+
+def _build_registered_system_instructions(system_instructions: Optional[str]) -> str:
+    existing = (system_instructions or "").strip()
+    if _SYSTEM_INSTRUCTIONS_QA_HEADER in existing:
+        return existing
+    if existing:
+        return f"{existing}\n\n{_SYSTEM_INSTRUCTIONS_QA_CONTRACT}".strip()
+    return _SYSTEM_INSTRUCTIONS_QA_CONTRACT.strip()
 
 
 def _build_job_submit_payload(request: JobSubmitRequest) -> Dict[str, Any]:
@@ -133,6 +163,7 @@ def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, 
     payload: Dict[str, Any] = {
         "repository_url": request.repository_url,
         "cli_client": request.cli_client,
+        "system_instructions": _build_registered_system_instructions(request.system_instructions),
     }
     if request.cli_model is not None:
         payload["cli_model"] = request.cli_model
@@ -140,8 +171,6 @@ def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, 
         payload["cli_effort"] = request.cli_effort
     if request.cli_flags is not None:
         payload["cli_flags"] = request.cli_flags
-    if request.system_instructions is not None:
-        payload["system_instructions"] = request.system_instructions
     return payload
 
 
@@ -182,9 +211,10 @@ def _store_project_sqlite(request: ProjectRegisterRequest) -> ProjectResponse:
 
     _write_env_file(project_path / ".env", request.env_vars)
 
-    if request.system_instructions and request.system_instructions.strip():
+    persisted_instructions = payload.get("system_instructions")
+    if isinstance(persisted_instructions, str) and persisted_instructions.strip():
         with (project_path / "system.md").open("w", encoding="utf-8") as handle:
-            handle.write(request.system_instructions.strip() + "\n")
+            handle.write(persisted_instructions.strip() + "\n")
 
     return _build_project_response(request.project_id, payload)
 
