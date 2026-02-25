@@ -1,5 +1,5 @@
 """Job SQLAlchemy model.
-Last edited: 2026-02-23
+Last edited: 2026-02-25 (remove callback_url column from active model contract)
 """
 from datetime import datetime
 from sqlalchemy import Column, String, Integer, Text, DateTime, JSON
@@ -20,7 +20,6 @@ class Job(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
-    callback_url = Column(String, nullable=True)
     env_vars_override = Column(JSON, nullable=True) # Optional JSON dict for job-specific env overrides
     target_branch = Column(String, default="main", nullable=False)
     branch_name = Column(String, nullable=True)   # Job branch created by worker (worker/{job_id[:8]})

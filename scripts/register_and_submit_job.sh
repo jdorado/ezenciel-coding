@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Register a project and submit a job from local project files.
-# Date edited: 2026-02-25 (default project path made public-safe)
+# Date edited: 2026-02-25 (remove callback fields from project registration payload)
 
 set -euo pipefail
 
@@ -137,8 +137,6 @@ register_payload: dict[str, Any] = {
     "cli_model": config_data.get("cli_model"),
     "cli_effort": config_data.get("cli_effort"),
     "cli_flags": config_data.get("cli_flags"),
-    "callback_url": config_data.get("callback_url"),
-    "callback_secret": config_data.get("callback_secret"),
     "system_instructions": system_instructions if system_instructions else None,
     "env_vars": env_vars,
 }

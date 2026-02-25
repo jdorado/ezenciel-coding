@@ -1,11 +1,10 @@
 """Worker engine tests.
-Last edited: 2026-02-25 (public-safe generic callback URL examples)
+Last edited: 2026-02-25 (remove callback sender coverage)
 """
 from __future__ import annotations
 
 import os
 import shutil
-from datetime import datetime
 from unittest.mock import call
 
 import pytest
@@ -211,57 +210,3 @@ def test_is_codex_json_command_only_for_codex_exec_json() -> None:
     assert _is_codex_json_command(["codex", "exec", "x"]) is False
     assert _is_codex_json_command(["claude", "-p", "x"]) is False
 
-
-def test_send_callback_includes_shared_secret_header(mocker) -> None:
-    worker = WorkerEngine(repository=SQLiteJobRepository())
-    mocked_post = mocker.patch("src.worker.engine.httpx.post")
-    mocker.patch(
-        "src.worker.engine.load_project_configs",
-        return_value={"test_dummy": {"callback_secret": "shared-secret"}},
-    )
-
-    worker._send_callback(
-        {
-            "id": "job-1",
-            "project_id": "test_dummy",
-            "status": "success",
-            "phase": "done",
-            "worker_id": "worker-a",
-            "branch_name": "worker/job-1",
-            "completed_at": datetime(2026, 2, 25, 10, 0, 0),
-            "callback_url": "https://agents.example.com/agents/devjob-webhook",
-            "result": {"pr_url": "https://github.com/acme/repo/pull/1"},
-        }
-    )
-
-    mocked_post.assert_called_once()
-    kwargs = mocked_post.call_args.kwargs
-    assert kwargs["headers"]["Content-Type"] == "application/json"
-    assert kwargs["headers"]["X-Webhook-Secret"] == "shared-secret"
-
-
-def test_send_callback_omits_secret_header_when_project_secret_missing(mocker) -> None:
-    worker = WorkerEngine(repository=SQLiteJobRepository())
-    mocked_post = mocker.patch("src.worker.engine.httpx.post")
-    mocker.patch(
-        "src.worker.engine.load_project_configs",
-        return_value={"test_dummy": {}},
-    )
-
-    worker._send_callback(
-        {
-            "id": "job-2",
-            "project_id": "test_dummy",
-            "status": "failed",
-            "phase": "done",
-            "worker_id": "worker-b",
-            "branch_name": "worker/job-2",
-            "completed_at": datetime(2026, 2, 25, 11, 0, 0),
-            "callback_url": "https://agents.example.com/agents/devjob-webhook",
-            "result": {"summary": "failure"},
-        }
-    )
-
-    mocked_post.assert_called_once()
-    kwargs = mocked_post.call_args.kwargs
-    assert kwargs["headers"] == {"Content-Type": "application/json"}

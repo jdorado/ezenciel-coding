@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-25 (project-level callback secret headers)
+Last edited: 2026-02-25 (remove callback send path; completion is poll-driven)
 """
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
-
-import httpx
 
 from src.config import _resolve_dir, load_project_configs, logger, settings
 from src.database.repository import JobRepository, get_repository
@@ -337,9 +335,6 @@ class WorkerEngine:
             if latest and latest.get("status") not in ("queued", "cancelled"):
                 latest = self.repo.update(job_id, {"completed_at": datetime.utcnow()}) or latest
                 logger.info("[job:{}] done status={}", job_id, latest.get("status"))
-                callback_url = latest.get("callback_url")
-                if callback_url:
-                    self._send_callback(latest)
 
     def _set_phase(self, job_id: str, phase: str) -> None:
         self.repo.update(job_id, {"phase": phase})
@@ -732,36 +727,6 @@ class WorkerEngine:
             raise RuntimeError(error_msg)
 
         return output
-
-    def _send_callback(self, job: Dict[str, Any]) -> None:
-        callback_url = job.get("callback_url")
-        if not callback_url:
-            return
-
-        try:
-            projects = load_project_configs()
-            project_id = job.get("project_id")
-            project = projects.get(project_id) if isinstance(project_id, str) else None
-            callback_secret = project.get("callback_secret") if isinstance(project, dict) else None
-            completed_at = job.get("completed_at")
-            payload = {
-                "id": job.get("id"),
-                "project_id": job.get("project_id"),
-                "status": job.get("status"),
-                "phase": job.get("phase"),
-                "worker_id": job.get("worker_id"),
-                "branch_name": job.get("branch_name"),
-                "completed_at": completed_at.isoformat() if completed_at else None,
-                "result": job.get("result"),
-            }
-            headers = {"Content-Type": "application/json"}
-            if isinstance(callback_secret, str) and callback_secret.strip():
-                headers["X-Webhook-Secret"] = callback_secret.strip()
-            httpx.post(callback_url, json=payload, headers=headers, timeout=5.0)
-            logger.info("Sent callback to {}", callback_url)
-        except Exception as exc:
-            logger.error("Failed to send callback for job {}: {}", job.get("id"), exc)
-
 
 # Global instance
 worker_engine = WorkerEngine()

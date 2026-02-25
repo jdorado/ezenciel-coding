@@ -1,5 +1,5 @@
 """ezenciel-coding API entrypoint.
-Last edited: 2026-02-25 (project-level callback config for job webhooks)
+Last edited: 2026-02-25 (remove DevJob callback contract fields)
 """
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ import uuid
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pymongo.errors import DuplicateKeyError
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -53,10 +53,11 @@ def verify_api_key(api_key: str = Security(api_key_header)) -> str:
 
 
 class JobSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     project_id: str
     prd_content: str
     target_branch: str = "main"
-    callback_url: Optional[str] = None
     env_vars_override: Optional[Dict[str, Any]] = None
 
 
@@ -70,7 +71,6 @@ class JobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
-    callback_url: Optional[str]
     target_branch: str
     branch_name: Optional[str]
     retry_count: int
@@ -79,6 +79,8 @@ class JobResponse(BaseModel):
 
 
 class ProjectRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     project_id: str
     repository_url: str
     cli_client: Literal["codex", "gemini", "claude"]
@@ -86,8 +88,6 @@ class ProjectRegisterRequest(BaseModel):
     cli_effort: Optional[str] = None
     cli_flags: Optional[str] = None
     system_instructions: Optional[str] = None
-    callback_url: Optional[str] = None
-    callback_secret: Optional[str] = None
     env_vars: Dict[str, str] = Field(default_factory=dict)
 
     @field_validator("project_id")
@@ -113,7 +113,6 @@ class ProjectResponse(BaseModel):
     cli_effort: Optional[str] = None
     cli_flags: Optional[str] = None
     system_instructions: Optional[str] = None
-    callback_url: Optional[str] = None
 
 
 _TERMINAL_STATUSES = {"success", "failed", "blocked", "cancelled"}
@@ -125,19 +124,9 @@ def _build_job_submit_payload(request: JobSubmitRequest) -> Dict[str, Any]:
         "project_id": request.project_id,
         "prd_content": request.prd_content,
         "target_branch": request.target_branch,
-        "callback_url": request.callback_url,
         "env_vars_override": request.env_vars_override,
         "status": "queued",
     }
-
-
-def _normalize_optional_non_empty_string(value: object, field_name: str) -> Optional[str]:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string when provided")
-    normalized = value.strip()
-    return normalized or None
 
 
 def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, Any]:
@@ -153,12 +142,6 @@ def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, 
         payload["cli_flags"] = request.cli_flags
     if request.system_instructions is not None:
         payload["system_instructions"] = request.system_instructions
-    callback_url = _normalize_optional_non_empty_string(request.callback_url, "callback_url")
-    if callback_url is not None:
-        payload["callback_url"] = callback_url
-    callback_secret = _normalize_optional_non_empty_string(request.callback_secret, "callback_secret")
-    if callback_secret is not None:
-        payload["callback_secret"] = callback_secret
     return payload
 
 
@@ -171,7 +154,6 @@ def _build_project_response(project_id: str, payload: Dict[str, Any]) -> Project
         cli_effort=payload.get("cli_effort"),
         cli_flags=payload.get("cli_flags"),
         system_instructions=payload.get("system_instructions"),
-        callback_url=payload.get("callback_url"),
     )
 
 
@@ -244,16 +226,7 @@ def submit_job(
     if not project.get("repository_url"):
         raise HTTPException(status_code=400, detail=f"Project '{request.project_id}' has no repository_url configured.")
 
-    try:
-        request_callback = _normalize_optional_non_empty_string(request.callback_url, "callback_url")
-        project_callback = _normalize_optional_non_empty_string(project.get("callback_url"), "project.callback_url")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    callback_url = request_callback or project_callback
-
     payload = _build_job_submit_payload(request)
-    payload["callback_url"] = callback_url
-
     return repo.create(payload)
 
 

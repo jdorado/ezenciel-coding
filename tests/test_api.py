@@ -1,5 +1,5 @@
 """API tests for job submission and project registration.
-Last edited: 2026-02-25 (public-safe generic callback URL examples)
+Last edited: 2026-02-25 (remove callback fields from API contract coverage)
 """
 from __future__ import annotations
 
@@ -45,8 +45,6 @@ def setup_module(module):
         handle.write(
             'repository_url: "dummy"\n'
             'cli_client: "codex"\n'
-            'callback_url: "https://agents.example.com/agents/devjob-webhook"\n'
-            'callback_secret: "dummy-secret"\n'
         )
 
 
@@ -90,13 +88,26 @@ def test_submit_job_success() -> None:
     assert "id" in data
     assert data["status"] == "queued"
     assert data["project_id"] == "dummy"
-    assert data["callback_url"] == "https://agents.example.com/agents/devjob-webhook"
+    assert "callback_url" not in data
 
     job_id = data["id"]
     get_response = client.get(f"/api/v1/jobs/{job_id}", headers=_headers())
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert get_data["id"] == job_id
+
+
+def test_submit_job_rejects_legacy_callback_url_field() -> None:
+    response = client.post(
+        "/api/v1/jobs",
+        json={
+            "project_id": "dummy",
+            "prd_content": "Legacy callback field should be rejected",
+            "callback_url": "https://legacy.example/callback",
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 422
 
 
 def test_register_project_success() -> None:
@@ -106,8 +117,6 @@ def test_register_project_success() -> None:
         "cli_client": "claude",
         "cli_model": "claude-opus-4-6",
         "system_instructions": "Use strict test-first workflow.",
-        "callback_url": "https://agents.example.com/agents/devjob-webhook",
-        "callback_secret": "project-api-secret",
         "env_vars": {"GITHUB_TOKEN": "token123"},
     }
 
@@ -116,9 +125,8 @@ def test_register_project_success() -> None:
     data = response.json()
     assert data["project_id"] == "project-api"
     assert data["repository_url"] == payload["repository_url"]
-    assert data["callback_url"] == payload["callback_url"]
     assert "env_vars" not in data
-    assert "callback_secret" not in data
+    assert "callback_url" not in data
 
     project_path = _project_path("project-api")
     assert (project_path / "config.yaml").exists()
@@ -126,19 +134,16 @@ def test_register_project_success() -> None:
     assert (project_path / "system.md").exists()
 
 
-def test_submit_job_request_callback_url_overrides_project_default() -> None:
-    response = client.post(
-        "/api/v1/jobs",
-        json={
-            "project_id": "dummy",
-            "prd_content": "Override callback url",
-            "callback_url": "http://override.local/callback",
-        },
-        headers=_headers(),
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["callback_url"] == "http://override.local/callback"
+def test_register_project_rejects_legacy_callback_fields() -> None:
+    payload = {
+        "project_id": "project-callback-legacy",
+        "repository_url": "https://github.com/example/project-callback-legacy.git",
+        "cli_client": "codex",
+        "callback_url": "https://legacy.example/callback",
+        "callback_secret": "legacy-secret",
+    }
+    response = client.post("/api/v1/projects", json=payload, headers=_headers())
+    assert response.status_code == 422
 
 
 def test_register_project_duplicate_conflict() -> None:

@@ -1,5 +1,5 @@
 """Job repository abstraction for SQLite and MongoDB backends.
-Last edited: 2026-02-25 (add swappable repository implementations)
+Last edited: 2026-02-25 (remove callback_url persistence from job contract)
 """
 from __future__ import annotations
 
@@ -58,7 +58,6 @@ _SQLITE_JOB_COLUMNS = (
     "created_at",
     "started_at",
     "completed_at",
-    "callback_url",
     "env_vars_override",
     "target_branch",
     "branch_name",
@@ -197,7 +196,6 @@ class MongoJobRepository(JobRepository):
         payload.setdefault("created_at", now)
         payload.setdefault("started_at", None)
         payload.setdefault("completed_at", None)
-        payload.setdefault("callback_url", None)
         payload.setdefault("env_vars_override", None)
         payload.setdefault("target_branch", "main")
         payload.setdefault("branch_name", None)

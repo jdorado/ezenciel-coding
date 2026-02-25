@@ -56,8 +56,6 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "cli_model": "gpt-4o",
     "cli_effort": null,
     "cli_flags": null,
-    "callback_url": "https://your-app.example.com/agents/devjob-webhook",
-    "callback_secret": "replace-with-strong-webhook-secret",
     "system_instructions": "optional per-project prompt",
     "env_vars": {
       "GITHUB_TOKEN": "..."
@@ -66,10 +64,6 @@ curl -X POST http://localhost:8080/api/v1/projects \
 ```
 
 Returns `201 Created` on success and `409` if `project_id` already exists.
-
-`callback_url` and `callback_secret` are optional and project-scoped. When set,
-new jobs for that project inherit `callback_url` automatically unless the job
-request overrides it.
 
 ## CLI Agent Credentials
 
@@ -149,8 +143,6 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "repository_url": "https://github.com/my-org/my-repo.git",
     "cli_client": "codex",
     "cli_model": "gpt-4o",
-    "callback_url": "https://your-app.example.com/agents/devjob-webhook",
-    "callback_secret": "replace-with-strong-webhook-secret",
     "env_vars": {
       "GITHUB_TOKEN": "..."
     }

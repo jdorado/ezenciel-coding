@@ -1,6 +1,6 @@
 # Project-Level DevJob Callback Config
 
-**Status:** Implemented
+**Status:** Historical (superseded on 2026-02-25 by callback removal)
 **Created:** 2026-02-25
 **Last edited:** 2026-02-25
 
@@ -9,6 +9,8 @@
 ## Goal
 
 Move callback URL/secret ownership from runtime env coupling to project registration payload so each registered project can define its own callback contract.
+
+> Superseded: callback support was removed from `ezenciel-coding`. See `specs/remove-devjob-callback-support.md`.
 
 ---
 
