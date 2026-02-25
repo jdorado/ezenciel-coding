@@ -1,5 +1,5 @@
 """ezenciel-coding API entrypoint.
-Last edited: 2026-02-25 (enforce QA system instructions on project registration)
+Last edited: 2026-02-25 (derive job target branch from project registration record)
 """
 import os
 from pathlib import Path
@@ -57,7 +57,6 @@ class JobSubmitRequest(BaseModel):
 
     project_id: str
     prd_content: str
-    target_branch: str = "main"
     env_vars_override: Optional[Dict[str, Any]] = None
 
 
@@ -83,6 +82,7 @@ class ProjectRegisterRequest(BaseModel):
 
     project_id: str
     repository_url: str
+    target_branch: str
     cli_client: Literal["codex", "gemini", "claude"]
     cli_model: Optional[str] = None
     cli_effort: Optional[str] = None
@@ -104,10 +104,18 @@ class ProjectRegisterRequest(BaseModel):
             raise ValueError("repository_url must be non-empty")
         return value.strip()
 
+    @field_validator("target_branch")
+    @classmethod
+    def validate_target_branch(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("target_branch must be non-empty")
+        return value.strip()
+
 
 class ProjectResponse(BaseModel):
     project_id: str
     repository_url: str
+    target_branch: str
     cli_client: Literal["codex", "gemini", "claude"]
     cli_model: Optional[str] = None
     cli_effort: Optional[str] = None
@@ -148,12 +156,12 @@ def _build_registered_system_instructions(system_instructions: Optional[str]) ->
     return _SYSTEM_INSTRUCTIONS_QA_CONTRACT.strip()
 
 
-def _build_job_submit_payload(request: JobSubmitRequest) -> Dict[str, Any]:
+def _build_job_submit_payload(request: JobSubmitRequest, *, target_branch: str) -> Dict[str, Any]:
     return {
         "id": str(uuid.uuid4()),
         "project_id": request.project_id,
         "prd_content": request.prd_content,
-        "target_branch": request.target_branch,
+        "target_branch": target_branch,
         "env_vars_override": request.env_vars_override,
         "status": "queued",
     }
@@ -162,6 +170,7 @@ def _build_job_submit_payload(request: JobSubmitRequest) -> Dict[str, Any]:
 def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "repository_url": request.repository_url,
+        "target_branch": request.target_branch,
         "cli_client": request.cli_client,
         "system_instructions": _build_registered_system_instructions(request.system_instructions),
     }
@@ -178,6 +187,7 @@ def _build_project_response(project_id: str, payload: Dict[str, Any]) -> Project
     return ProjectResponse(
         project_id=project_id,
         repository_url=payload["repository_url"],
+        target_branch=payload["target_branch"],
         cli_client=payload["cli_client"],
         cli_model=payload.get("cli_model"),
         cli_effort=payload.get("cli_effort"),
@@ -255,8 +265,17 @@ def submit_job(
         raise HTTPException(status_code=400, detail=f"Project '{request.project_id}' not registered.")
     if not project.get("repository_url"):
         raise HTTPException(status_code=400, detail=f"Project '{request.project_id}' has no repository_url configured.")
+    target_branch = project.get("target_branch")
+    if not isinstance(target_branch, str) or not target_branch.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Project '{request.project_id}' has no target_branch configured. "
+                "Re-register the project with target_branch."
+            ),
+        )
 
-    payload = _build_job_submit_payload(request)
+    payload = _build_job_submit_payload(request, target_branch=target_branch.strip())
     return repo.create(payload)
 
 

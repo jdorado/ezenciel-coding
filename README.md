@@ -1,5 +1,5 @@
 # ezenciel-coding
-<!-- Updated: 2026-02-25 -->
+<!-- Updated: 2026-02-25 (target_branch is project-level and resolved during job submit) -->
 
 REST API + worker that runs AI coding agents (codex, gemini, claude) against your repos.
 
@@ -52,6 +52,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
   -d '{
     "project_id": "my-repo",
     "repository_url": "https://github.com/my-org/my-repo.git",
+    "target_branch": "main",
     "cli_client": "codex",
     "cli_model": "gpt-4o",
     "cli_effort": null,
@@ -120,6 +121,7 @@ Create a directory under `projects/` with a `config.yaml`:
 ```yaml
 # projects/my-repo/config.yaml
 repository_url: "https://github.com/my-org/my-repo.git"
+target_branch: "main"
 cli_client: "codex"       # codex | gemini | claude
 cli_model: "gpt-4o"
 cli_effort: "high"
@@ -141,6 +143,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
   -d '{
     "project_id": "my-repo",
     "repository_url": "https://github.com/my-org/my-repo.git",
+    "target_branch": "main",
     "cli_client": "codex",
     "cli_model": "gpt-4o",
     "env_vars": {

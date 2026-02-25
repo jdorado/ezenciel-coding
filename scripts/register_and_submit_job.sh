@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Register a project and submit a job from local project files.
-# Date edited: 2026-02-25 (remove callback fields from project registration payload)
+# Date edited: 2026-02-25 (project target_branch is now source of truth for submitted jobs)
 
 set -euo pipefail
 
@@ -26,7 +26,7 @@ Options:
   --api-key <key>         Override API key (default: DEV_WORKER_API_KEY or API_KEY from root .env)
   --prd-file <path>       PRD content file for job payload
   --prd-content <text>    PRD content inline (used when --prd-file is not set)
-  --target-branch <name>  Override target branch for job (default: main)
+  --target-branch <name>  Override project target_branch at registration time
   --skip-register         Skip POST /api/v1/projects and only submit job
   -h, --help              Show help
 USAGE
@@ -117,6 +117,14 @@ cli_client = str(config_data.get("cli_client") or "codex")
 if cli_client not in {"codex", "gemini", "claude"}:
     raise SystemExit(f"Invalid cli_client '{cli_client}' in {config_path}")
 
+target_branch_raw = target_branch_override or config_data.get("target_branch")
+if not isinstance(target_branch_raw, str) or not target_branch_raw.strip():
+    raise SystemExit(
+        f"Missing target_branch in {config_path}. "
+        "Set target_branch in config.yaml or pass --target-branch."
+    )
+target_branch = target_branch_raw.strip()
+
 system_instructions = ""
 if system_path.is_file():
     system_instructions = system_path.read_text(encoding="utf-8").strip()
@@ -133,6 +141,7 @@ for key, value in project_env.items():
 register_payload: dict[str, Any] = {
     "project_id": project_id,
     "repository_url": repository_url.strip(),
+    "target_branch": target_branch,
     "cli_client": cli_client,
     "cli_model": config_data.get("cli_model"),
     "cli_effort": config_data.get("cli_effort"),
@@ -148,11 +157,9 @@ else:
 if not prd_content:
     raise SystemExit("PRD content is empty. Provide --prd-file or --prd-content.")
 
-target_branch = target_branch_override or str(config_data.get("target_branch") or "main")
 job_payload = {
     "project_id": project_id,
     "prd_content": prd_content,
-    "target_branch": target_branch,
 }
 
 (tmp_dir / "register_payload.json").write_text(json.dumps(register_payload, ensure_ascii=True), encoding="utf-8")

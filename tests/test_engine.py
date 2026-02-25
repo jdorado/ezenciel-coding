@@ -1,5 +1,5 @@
 """Worker engine tests.
-Last edited: 2026-02-25 (remove callback sender coverage)
+Last edited: 2026-02-25 (QA evidence tracker parsing and PR body coverage)
 """
 from __future__ import annotations
 
@@ -14,11 +14,15 @@ from src.database.session import SessionLocal, engine
 from src.models.job import Base, Job
 from src.worker.engine import (
     WorkerEngine,
+    _build_agent_instructions,
+    _build_pr_body,
     _extract_codex_agent_message_line,
     _extract_codex_error_line,
+    _extract_markdown_section,
     _build_agent_command,
     _extract_codex_reasoning_line,
     _is_codex_json_command,
+    _load_qa_evidence_from_tracker,
 )
 
 
@@ -175,6 +179,21 @@ def test_build_agent_command_codex_adds_json_when_not_in_flags() -> None:
     assert cmd.count("--json") == 1
 
 
+def test_build_agent_instructions_appends_worker_runtime_contract() -> None:
+    instructions = _build_agent_instructions({"system_instructions": "Custom project prompt"})
+
+    assert instructions.startswith("Custom project prompt")
+    assert "## Worker Instructions" in instructions
+    assert "## QA Evidence" in instructions
+
+
+def test_build_agent_instructions_uses_worker_runtime_contract_when_empty() -> None:
+    instructions = _build_agent_instructions({})
+
+    assert "## Worker Instructions" in instructions
+    assert "## QA Evidence" in instructions
+
+
 def test_extract_codex_reasoning_line_reads_reasoning_event() -> None:
     raw = '{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"plan then implement"}}'
     assert _extract_codex_reasoning_line(raw) == "plan then implement"
@@ -210,3 +229,63 @@ def test_is_codex_json_command_only_for_codex_exec_json() -> None:
     assert _is_codex_json_command(["codex", "exec", "x"]) is False
     assert _is_codex_json_command(["claude", "-p", "x"]) is False
 
+
+def test_extract_markdown_section_returns_body_until_next_header() -> None:
+    markdown = (
+        "# Title\n\n"
+        "## QA Evidence\n"
+        "- `poetry run pytest -q` -> PASS\n"
+        "- `python scripts/run_agent.py` -> PASS\n\n"
+        "## Notes\n"
+        "done\n"
+    )
+
+    section = _extract_markdown_section(markdown, "QA Evidence")
+
+    assert section == "- `poetry run pytest -q` -> PASS\n- `python scripts/run_agent.py` -> PASS"
+
+
+def test_load_qa_evidence_from_tracker_prefers_qa_evidence_header(tmp_path) -> None:
+    tracker = tmp_path / ".devjob_tracker.md"
+    tracker.write_text(
+        (
+            "## QA Evidence\n"
+            "- `pytest -q` -> PASS\n\n"
+            "## Verification Run\n"
+            "- `python scripts/run_agent.py` -> PASS\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert _load_qa_evidence_from_tracker(str(tmp_path)) == "- `pytest -q` -> PASS"
+
+
+def test_load_qa_evidence_from_tracker_falls_back_to_verification_run(tmp_path) -> None:
+    tracker = tmp_path / ".devjob_tracker.md"
+    tracker.write_text(
+        (
+            "## Plan Summary\n"
+            "work\n\n"
+            "## Verification Run\n"
+            "- `python scripts/run_agent.py` -> PASS\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert _load_qa_evidence_from_tracker(str(tmp_path)) == "- `python scripts/run_agent.py` -> PASS"
+
+
+def test_build_pr_body_includes_qa_evidence_section() -> None:
+    body = _build_pr_body(
+        prd_content="# Feature\nShip update",
+        job_id="job-123",
+        project_id="proj-a",
+        job_branch="worker/job-123",
+        diffstat=" file.py | 2 ++",
+        qa_evidence="- `pytest -q` -> PASS",
+    )
+
+    assert "## QA Evidence" in body
+    assert "Source: `.devjob_tracker.md`" in body
+    assert "- `pytest -q` -> PASS" in body
+    assert "**Job:** `job-123` | **Project:** `proj-a` | **Branch:** `worker/job-123`" in body

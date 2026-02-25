@@ -1,5 +1,5 @@
 """API tests for job submission and project registration.
-Last edited: 2026-02-25 (enforce registration-time QA system instructions)
+Last edited: 2026-02-25 (job target_branch resolved from project registration)
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def setup_module(module):
     Base.metadata.create_all(bind=engine)
     _build_repository.cache_clear()
 
-    for project_id in ("dummy", "project-api", "project-api-default-system"):
+    for project_id in ("dummy", "dummy-dev", "project-api", "project-api-default-system"):
         path = _project_path(project_id)
         if path.exists():
             shutil.rmtree(path)
@@ -44,12 +44,22 @@ def setup_module(module):
     with (path / "config.yaml").open("w", encoding="utf-8") as handle:
         handle.write(
             'repository_url: "dummy"\n'
+            'target_branch: "main"\n'
+            'cli_client: "codex"\n'
+        )
+
+    dev_path = _project_path("dummy-dev")
+    dev_path.mkdir(parents=True, exist_ok=True)
+    with (dev_path / "config.yaml").open("w", encoding="utf-8") as handle:
+        handle.write(
+            'repository_url: "dummy-dev"\n'
+            'target_branch: "dev"\n'
             'cli_client: "codex"\n'
         )
 
 
 def teardown_module(module):
-    for project_id in ("dummy", "project-api", "project-api-default-system"):
+    for project_id in ("dummy", "dummy-dev", "project-api", "project-api-default-system"):
         path = _project_path(project_id)
         if path.exists():
             shutil.rmtree(path)
@@ -88,6 +98,7 @@ def test_submit_job_success() -> None:
     assert "id" in data
     assert data["status"] == "queued"
     assert data["project_id"] == "dummy"
+    assert data["target_branch"] == "main"
     assert "callback_url" not in data
 
     job_id = data["id"]
@@ -110,10 +121,35 @@ def test_submit_job_rejects_legacy_callback_url_field() -> None:
     assert response.status_code == 422
 
 
+def test_submit_job_rejects_target_branch_override_field() -> None:
+    response = client.post(
+        "/api/v1/jobs",
+        json={
+            "project_id": "dummy",
+            "prd_content": "Target branch must come from project registration.",
+            "target_branch": "dev",
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+
+
+def test_submit_job_uses_project_target_branch() -> None:
+    response = client.post(
+        "/api/v1/jobs",
+        json={"project_id": "dummy-dev", "prd_content": "Use project-level branch."},
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["target_branch"] == "dev"
+
+
 def test_register_project_success() -> None:
     payload = {
         "project_id": "project-api",
         "repository_url": "https://github.com/example/project-api.git",
+        "target_branch": "main",
         "cli_client": "claude",
         "cli_model": "claude-opus-4-6",
         "system_instructions": "Use strict test-first workflow.",
@@ -125,6 +161,7 @@ def test_register_project_success() -> None:
     data = response.json()
     assert data["project_id"] == "project-api"
     assert data["repository_url"] == payload["repository_url"]
+    assert data["target_branch"] == payload["target_branch"]
     assert payload["system_instructions"] in data["system_instructions"]
     assert _SYSTEM_INSTRUCTIONS_QA_HEADER in data["system_instructions"]
     assert "env_vars" not in data
@@ -143,6 +180,7 @@ def test_register_project_injects_default_system_instructions_when_missing() -> 
     payload = {
         "project_id": "project-api-default-system",
         "repository_url": "https://github.com/example/project-api-default-system.git",
+        "target_branch": "main",
         "cli_client": "codex",
         "env_vars": {},
     }
@@ -167,6 +205,7 @@ def test_register_project_rejects_legacy_callback_fields() -> None:
     payload = {
         "project_id": "project-callback-legacy",
         "repository_url": "https://github.com/example/project-callback-legacy.git",
+        "target_branch": "main",
         "cli_client": "codex",
         "callback_url": "https://legacy.example/callback",
         "callback_secret": "legacy-secret",
@@ -179,6 +218,7 @@ def test_register_project_duplicate_conflict() -> None:
     payload = {
         "project_id": "project-api",
         "repository_url": "https://github.com/example/project-api.git",
+        "target_branch": "main",
         "cli_client": "codex",
     }
     response = client.post("/api/v1/projects", json=payload, headers=_headers())
@@ -189,6 +229,7 @@ def test_register_project_validation() -> None:
     payload = {
         "project_id": "Bad ID",
         "repository_url": "https://github.com/example/project-api.git",
+        "target_branch": "main",
         "cli_client": "codex",
     }
     response = client.post("/api/v1/projects", json=payload, headers=_headers())

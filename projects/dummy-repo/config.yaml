@@ -1,4 +1,6 @@
+# Last edited: 2026-02-25 (add project-level target_branch for job submission source-of-truth)
 repository_url: "git@github.com:dummy/dummy-repo.git"
+target_branch: "main"
 cli_client: "codex"
 cli_model: "gpt-4o"
 cli_effort: "high"

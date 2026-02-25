@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-25 (remove callback send path; completion is poll-driven)
+Last edited: 2026-02-25 (require QA evidence and include it in PR body)
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mABCDEFGHJKSTfnsulh]")
 
 WORKER_NAME = f"ezenciel-worker:{socket.gethostname()}"
 _WORKER_RESULT_FILE = ".worker_result.json"
+_DEVJOB_TRACKER_FILE = ".devjob_tracker.md"
 
 # Built-in non-interactive / full-permission flags per CLI client.
 _CLIENT_AUTO_FLAGS: dict[str, list[str]] = {
@@ -80,6 +81,67 @@ def _extract_pr_url(output: str) -> Optional[str]:
     return None
 
 
+def _normalize_markdown_header(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def _extract_markdown_section(markdown_text: str, header: str) -> Optional[str]:
+    target = _normalize_markdown_header(header)
+    lines = markdown_text.splitlines()
+    collecting = False
+    collected: list[str] = []
+
+    for line in lines:
+        header_match = re.match(r"^#{1,6}\s+(.*?)\s*$", line)
+        if header_match:
+            current_header = _normalize_markdown_header(header_match.group(1))
+            if collecting:
+                break
+            if current_header == target:
+                collecting = True
+                continue
+        if collecting:
+            collected.append(line)
+
+    if not collecting:
+        return None
+
+    section = "\n".join(collected).strip()
+    return section or None
+
+
+def _load_qa_evidence_from_tracker(workspace_dir: str) -> Optional[str]:
+    tracker_path = os.path.join(workspace_dir, _DEVJOB_TRACKER_FILE)
+    if not os.path.exists(tracker_path):
+        return None
+
+    try:
+        with open(tracker_path, encoding="utf-8") as handle:
+            tracker_text = handle.read()
+    except Exception as exc:
+        logger.warning("Failed to read {}: {}", _DEVJOB_TRACKER_FILE, exc)
+        return None
+
+    for header in ("QA Evidence", "Verification Run"):
+        section = _extract_markdown_section(tracker_text, header)
+        if section:
+            return section
+
+    return None
+
+
+def _build_pr_body(*, prd_content: str, job_id: str, project_id: str, job_branch: str, diffstat: str, qa_evidence: str) -> str:
+    return (
+        f"{prd_content.strip()}\n\n"
+        f"## QA Evidence\n"
+        f"Source: `{_DEVJOB_TRACKER_FILE}`\n\n"
+        f"{qa_evidence.strip()}\n\n"
+        f"---\n"
+        f"**Job:** `{job_id}` | **Project:** `{project_id}` | **Branch:** `{job_branch}`\n\n"
+        f"<details><summary>Diff stat</summary>\n\n```\n{diffstat.strip()}\n```\n</details>"
+    )
+
+
 def _default_agent_instructions() -> str:
     return """
 
@@ -88,14 +150,18 @@ def _default_agent_instructions() -> str:
 
 After completing your implementation:
 
-1. If you encounter a blocker (missing API key, external dependency, decision needed from owner):
+1. Keep `.devjob_tracker.md` updated and include a `## QA Evidence` section before finishing.
+   - Required format: command + explicit PASS/FAIL result per line.
+   - If `## QA Evidence` is not available, at minimum include this in `## Verification Run`.
+
+2. If you encounter a blocker (missing API key, external dependency, decision needed from owner):
    Write `.worker_result.json` in the repo root:
    ```json
    {"type": "blocked", "blockers": ["description of what is needed"], "summary": "brief explanation"}
    ```
    Then stop — do NOT make code changes when blocked.
 
-2. If implementation completes successfully, no action needed.
+3. If implementation completes successfully, no action needed.
    The worker will detect your committed/uncommitted changes automatically.
 
 Do NOT write `.worker_result.json` on success.
@@ -103,10 +169,12 @@ Do NOT write `.worker_result.json` on success.
 
 
 def _build_agent_instructions(project: dict) -> str:
+    sections: list[str] = []
     configured_prompt = project.get("system_instructions")
     if isinstance(configured_prompt, str) and configured_prompt.strip():
-        return configured_prompt.strip() + "\n"
-    return _default_agent_instructions()
+        sections.append(configured_prompt.strip())
+    sections.append(_default_agent_instructions().strip())
+    return "\n\n".join(sections).strip() + "\n"
 
 
 def _build_agent_command(
@@ -500,6 +568,25 @@ class WorkerEngine:
                 raise _BlockedError(f"Agent signaled blocker: {joined}")
 
         # 4. No-changes detection
+        qa_evidence = _load_qa_evidence_from_tracker(workspace_dir)
+        if not qa_evidence:
+            missing_qa_message = (
+                f"Missing QA evidence in `{_DEVJOB_TRACKER_FILE}`. "
+                "Add `## QA Evidence` or `## Verification Run` with exact commands and pass/fail outcomes."
+            )
+            self.repo.update(
+                job_id,
+                {
+                    "result": {
+                        "type": "blocked",
+                        "blockers": [missing_qa_message],
+                        "summary": missing_qa_message,
+                        "commands_ran": commands_ran,
+                    }
+                },
+            )
+            raise _BlockedError(missing_qa_message)
+
         post_head = self._run_cmd(["git", "rev-parse", "HEAD"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran).strip()
         status_output = self._run_cmd(["git", "status", "--porcelain"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
         has_uncommitted = bool(status_output.strip())
@@ -563,11 +650,13 @@ class WorkerEngine:
             try:
                 latest_job = self.repo.get(job_id) or job
                 prd_content = latest_job.get("prd_content", "")
-                pr_body = (
-                    f"{prd_content.strip()}\n\n"
-                    f"---\n"
-                    f"**Job:** `{job_id}` | **Project:** `{job['project_id']}` | **Branch:** `{job_branch}`\n\n"
-                    f"<details><summary>Diff stat</summary>\n\n```\n{diffstat.strip()}\n```\n</details>"
+                pr_body = _build_pr_body(
+                    prd_content=prd_content,
+                    job_id=job_id,
+                    project_id=job["project_id"],
+                    job_branch=job_branch,
+                    diffstat=diffstat,
+                    qa_evidence=qa_evidence,
                 )
                 pr_output = self._run_cmd(
                     [
