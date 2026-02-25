@@ -1,5 +1,5 @@
 """Configuration loading for ezenciel-coding.
-Last edited: 2026-02-23 (resolve db_path/projects_dir/workspaces_dir relative to REPO_ROOT)
+Last edited: 2026-02-25 (add MongoDB-backed project config loading)
 """
 from typing import Dict, Any, Optional
 import os
@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     api_key: Optional[str] = None
     db_path: str = "sqlite:///data/worker.db"
+    mongodb_uri: Optional[str] = None
     poll_interval_seconds: int = 5
     workspaces_dir: str = "workspaces"
     projects_dir: str = "projects"
@@ -66,6 +67,20 @@ def load_project_configs() -> Dict[str, Any]:
     - system.md (optional, per-project coder instructions)
     """
     projects = {}
+    if settings.mongodb_uri:
+        from src.database.mongo import get_mongo_db
+
+        db = get_mongo_db()
+        for doc in db["projects"].find({}):
+            project_id = doc.get("project_id")
+            if not project_id:
+                continue
+            payload = dict(doc)
+            payload.pop("_id", None)
+            payload.pop("project_id", None)
+            projects[project_id] = payload
+        return projects
+
     projects_dir = _resolve_dir(settings.projects_dir)
     if not os.path.exists(projects_dir):
         os.makedirs(projects_dir, exist_ok=True)

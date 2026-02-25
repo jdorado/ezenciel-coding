@@ -1,4 +1,4 @@
-# Updated: 2026-02-23
+# Updated: 2026-02-25
 name: Deploy
 
 on:
@@ -32,10 +32,15 @@ jobs:
       - name: Run containers
         env:
           API_KEY: ${{ secrets.API_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: |
           set -euo pipefail
-          if [ -n "${API_KEY}" ]; then
-            echo "API_KEY=${API_KEY}" > .env
+          : > .env
+          if [ -n "${API_KEY:-}" ]; then
+            echo "API_KEY=${API_KEY}" >> .env
+          fi
+          if [ -n "${MONGODB_URI:-}" ]; then
+            echo "MONGODB_URI=${MONGODB_URI}" >> .env
           fi
           docker-compose up -d
 

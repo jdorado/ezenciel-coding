@@ -1,6 +1,8 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-23 (timezone-aware datetimes; rich PR body from PRD)
+Last edited: 2026-02-25 (codex logs now keep reasoning/thinking lines only)
 """
+from __future__ import annotations
+
 import json
 import os
 import queue
@@ -12,22 +14,22 @@ import socket
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta, timezone
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mABCDEFGHJKSTfnsulh]")
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 
-from src.database.session import SessionLocal
-from src.models.job import Job
-from src.config import settings, load_project_configs, logger
+from src.config import _resolve_dir, load_project_configs, logger, settings
+from src.database.repository import JobRepository, get_repository
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mABCDEFGHJKSTfnsulh]")
 
 WORKER_NAME = f"ezenciel-worker:{socket.gethostname()}"
 _WORKER_RESULT_FILE = ".worker_result.json"
 
 # Built-in non-interactive / full-permission flags per CLI client.
 _CLIENT_AUTO_FLAGS: dict[str, list[str]] = {
-    "codex":  ["--dangerously-bypass-approvals-and-sandbox"],
+    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
     "claude": ["-p", "--dangerously-skip-permissions"],
     "gemini": ["--yolo"],
 }
@@ -35,34 +37,44 @@ _CLIENT_AUTO_FLAGS: dict[str, list[str]] = {
 # Default model per CLI client. Used when project config omits cli_model.
 # Empty string means no --model flag — the CLI uses its own built-in default.
 _CLIENT_DEFAULT_MODELS: dict[str, str] = {
-    "codex":  "",
+    "codex": "",
     "claude": "claude-sonnet-4-6",
     "gemini": "",
 }
 
-_RATE_LIMIT_MARKERS = ("429", "rate limit", "resource_exhausted", "capacity exhausted", "rateLimitExceeded", "MODEL_CAPACITY_EXHAUSTED")
+_RATE_LIMIT_MARKERS = (
+    "429",
+    "rate limit",
+    "resource_exhausted",
+    "capacity exhausted",
+    "rateLimitExceeded",
+    "MODEL_CAPACITY_EXHAUSTED",
+)
+
+_IMPLEMENT_PROMPT = "Please implement the requirements in PRD.md. Make sure to test your code."
+
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
     text = str(exc).lower()
-    return any(m.lower() in text for m in _RATE_LIMIT_MARKERS)
+    return any(marker.lower() in text for marker in _RATE_LIMIT_MARKERS)
 
 
 class _BlockedError(Exception):
     """Agent signaled a blocker or produced no changes — needs human attention."""
 
 
-def _read_worker_result(path: str) -> dict | None:
+def _read_worker_result(path: str) -> Optional[dict]:
     try:
         if not os.path.exists(path):
             return None
-        with open(path) as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning("Failed to read worker result file {}: {}", path, e)
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:
+        logger.warning("Failed to read worker result file {}: {}", path, exc)
         return None
 
 
-def _extract_pr_url(output: str) -> str | None:
+def _extract_pr_url(output: str) -> Optional[str]:
     for line in output.splitlines():
         line = line.strip()
         if line.startswith("https://github.com/") and "/pull/" in line:
@@ -99,142 +111,239 @@ def _build_agent_instructions(project: dict) -> str:
     return _default_agent_instructions()
 
 
-class WorkerEngine:
-    def __init__(self):
-        self.is_running = False
-        self.thread = None
+def _build_agent_command(
+    *,
+    cli_client: str,
+    cli_model: str,
+    cli_effort: str,
+    cli_flags: str,
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> list[str]:
+    cmd_parts = [cli_client]
+    parsed_cli_flags = shlex.split(cli_flags) if cli_flags else []
+    if cli_client == "codex":
+        # `codex` top-level launches TUI and requires a terminal.
+        # `codex exec` is the non-interactive mode for worker containers.
+        cmd_parts.append("exec")
+        if "--json" not in parsed_cli_flags:
+            # JSON events allow us to keep only codex reasoning lines in worker logs.
+            cmd_parts.append("--json")
 
-    def start(self):
+    cmd_parts.extend(_CLIENT_AUTO_FLAGS.get(cli_client, []))
+    if cli_model:
+        cmd_parts.extend(["--model", cli_model])
+    if cli_client == "codex" and cli_effort and on_warning is not None:
+        on_warning("cli_effort is ignored for codex exec mode; set raw codex overrides in cli_flags if needed.")
+    cmd_parts.extend(parsed_cli_flags)
+    cmd_parts.append(_IMPLEMENT_PROMPT)
+    return cmd_parts
+
+
+def _is_codex_json_command(cmd: list[str]) -> bool:
+    return len(cmd) >= 2 and cmd[0] == "codex" and cmd[1] == "exec" and "--json" in cmd
+
+
+def _extract_codex_reasoning_line(raw_line: str) -> Optional[str]:
+    stripped = raw_line.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+    if payload.get("type") != "item.completed":
+        return None
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return None
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return None
+
+
+class WorkerEngine:
+    def __init__(self, repository: Optional[JobRepository] = None):
+        self.repo = repository or get_repository()
+        self.is_running = False
+        self.thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
         self.is_running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         logger.info("Worker engine started worker_name={}", WORKER_NAME)
 
-    def stop(self):
+    def stop(self) -> None:
         self.is_running = False
         if self.thread:
             self.thread.join()
         logger.info("Worker engine stopped")
 
-    def _run_loop(self):
+    def _run_loop(self) -> None:
         while self.is_running:
             self._recover_stale_jobs()
             self._print_heartbeat()
             self._process_next_job()
             time.sleep(settings.poll_interval_seconds)
 
-    def _recover_stale_jobs(self):
-        db = SessionLocal()
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.job_timeout_minutes)
-            stale = (
-                db.query(Job)
-                .filter(Job.status == "in_progress")
-                .filter(Job.started_at <= cutoff)
-                .all()
-            )
-            for job in stale:
-                logger.warning("[job:{}] stale — no heartbeat for {}m, marking failed", job.id, settings.job_timeout_minutes)
-                job.status = "failed"
-                job.phase = "done"
-                job.result = {"type": "failed", "error": f"Job timed out after {settings.job_timeout_minutes} minutes (worker likely crashed)", "error_type": "Timeout"}
-                job.completed_at = datetime.now(timezone.utc)
-            if stale:
-                db.commit()
-        finally:
-            db.close()
+    def _recover_stale_jobs(self) -> None:
+        cutoff = datetime.utcnow() - timedelta(minutes=settings.job_timeout_minutes)
+        stale_jobs = self.repo.list_stale(cutoff)
 
-    def _print_heartbeat(self):
-        db = SessionLocal()
-        try:
-            queued = db.query(Job).filter(Job.status == "queued").count()
-            running = db.query(Job).filter(Job.status == "in_progress").count()
-            logger.info("[heartbeat] queued={} running={}", queued, running)
-        finally:
-            db.close()
-
-    def _process_next_job(self):
-        db = SessionLocal()
-        try:
-            now = datetime.now(timezone.utc)
-            job = (
-                db.query(Job)
-                .filter(Job.status == "queued")
-                .filter((Job.retry_after == None) | (Job.retry_after <= now))
-                .order_by(Job.created_at.asc())
-                .first()
+        for job in stale_jobs:
+            logger.warning(
+                "[job:{}] stale — no heartbeat for {}m, marking failed",
+                job["id"],
+                settings.job_timeout_minutes,
             )
-            if not job:
+            self.repo.update(
+                job["id"],
+                {
+                    "status": "failed",
+                    "phase": "done",
+                    "result": {
+                        "type": "failed",
+                        "error": f"Job timed out after {settings.job_timeout_minutes} minutes (worker likely crashed)",
+                        "error_type": "Timeout",
+                    },
+                    "completed_at": datetime.utcnow(),
+                },
+            )
+
+    def _print_heartbeat(self) -> None:
+        queued_present = bool(self.repo.list(status="queued", limit=1))
+        running_present = bool(self.repo.list(status="in_progress", limit=1))
+        logger.info("[heartbeat] queued_present={} running_present={}", queued_present, running_present)
+
+    def _process_next_job(self) -> None:
+        job = self.repo.claim_next(worker_id=WORKER_NAME)
+        if not job:
+            return
+
+        job_id = job["id"]
+        logger.info(
+            "[job:{}] claimed project={} target_branch={} attempt={}",
+            job_id,
+            job["project_id"],
+            job.get("target_branch"),
+            int(job.get("retry_count", 0)) + 1,
+        )
+
+        try:
+            self._execute_job(job_id)
+            latest = self.repo.get(job_id)
+            if latest and latest.get("status") != "cancelled":
+                self.repo.update(job_id, {"status": "success", "phase": "done"})
+                self._append_log(job_id, "\nJob completed successfully.")
+
+        except _BlockedError as exc:
+            latest = self.repo.get(job_id)
+            if latest and latest.get("status") == "cancelled":
+                logger.info("[job:{}] was cancelled mid-run, leaving as cancelled", job_id)
+                return
+            self.repo.update(job_id, {"status": "blocked", "phase": "done"})
+            self._append_log(job_id, f"\nJob blocked: {str(exc)}")
+
+        except Exception as exc:
+            latest = self.repo.get(job_id)
+            if latest and latest.get("status") == "cancelled":
+                logger.info("[job:{}] was cancelled mid-run, leaving as cancelled", job_id)
                 return
 
-            logger.info("[job:{}] claimed project={} target_branch={} attempt={}", job.id, job.project_id, job.target_branch, job.retry_count + 1)
-            job.status = "in_progress"
-            job.worker_id = WORKER_NAME
-            job.started_at = datetime.now(timezone.utc)
-            job.retry_after = None
-            job.phase = "claimed"
-            db.commit()
+            retry_count = int((latest or job).get("retry_count", 0))
+            if _is_rate_limit_error(exc) and retry_count < settings.job_max_retries:
+                retry_at = datetime.utcnow() + timedelta(minutes=settings.job_retry_delay_minutes)
+                self.repo.update(
+                    job_id,
+                    {
+                        "retry_count": retry_count + 1,
+                        "status": "queued",
+                        "phase": None,
+                        "retry_after": retry_at,
+                    },
+                )
+                logger.info(
+                    "[job:{}] rate-limit hit — retry {}/{} scheduled at {}",
+                    job_id,
+                    retry_count + 1,
+                    settings.job_max_retries,
+                    retry_at.strftime("%H:%M:%SZ"),
+                )
+                return
 
-            try:
-                self._execute_job(job, db)
-                job.status = "success"
-                job.phase = "done"
-                self._append_log(job, db, "\nJob completed successfully.")
-            except _BlockedError as e:
-                db.refresh(job)
-                if job.status == "cancelled":
-                    logger.info("[job:{}] was cancelled mid-run, leaving as cancelled", job.id)
-                    return
-                job.status = "blocked"
-                job.phase = "done"
-                self._append_log(job, db, f"\nJob blocked: {str(e)}")
-            except Exception as e:
-                db.refresh(job)
-                if job.status == "cancelled":
-                    logger.info("[job:{}] was cancelled mid-run, leaving as cancelled", job.id)
-                    return
-                if _is_rate_limit_error(e) and job.retry_count < settings.job_max_retries:
-                    job.retry_count += 1
-                    retry_at = datetime.now(timezone.utc) + timedelta(minutes=settings.job_retry_delay_minutes)
-                    job.status = "queued"
-                    job.phase = None
-                    job.retry_after = retry_at
-                    db.commit()
-                    logger.info(
-                        "[job:{}] rate-limit hit — retry {}/{} scheduled at {}",
-                        job.id, job.retry_count, settings.job_max_retries, retry_at.strftime("%H:%M:%SZ"),
-                    )
-                    return
-                job.status = "failed"
-                job.phase = "done"
-                if not job.result:
-                    job.result = {"type": "failed", "error": str(e), "error_type": type(e).__name__}
-                self._append_log(job, db, f"\nJob failed: {str(e)}")
-            finally:
-                if job.status not in ("queued", "cancelled"):
-                    job.completed_at = datetime.now(timezone.utc)
-                    db.commit()
-                    logger.info("[job:{}] done status={}", job.id, job.status)
-                    if job.callback_url:
-                        self._send_callback(job)
+            latest_result = (latest or {}).get("result")
+            updates: Dict[str, Any] = {"status": "failed", "phase": "done"}
+            if not latest_result:
+                updates["result"] = {"type": "failed", "error": str(exc), "error_type": type(exc).__name__}
+            self.repo.update(job_id, updates)
+            self._append_log(job_id, f"\nJob failed: {str(exc)}")
+
         finally:
-            db.close()
+            latest = self.repo.get(job_id)
+            if latest and latest.get("status") not in ("queued", "cancelled"):
+                latest = self.repo.update(job_id, {"completed_at": datetime.utcnow()}) or latest
+                logger.info("[job:{}] done status={}", job_id, latest.get("status"))
+                callback_url = latest.get("callback_url")
+                if callback_url:
+                    self._send_callback(latest)
 
-    def _set_phase(self, job: Job, db, phase: str):
-        job.phase = phase
-        db.commit()
-        logger.info("[job:{}] phase={}", job.id, phase)
+    def _set_phase(self, job_id: str, phase: str) -> None:
+        self.repo.update(job_id, {"phase": phase})
+        logger.info("[job:{}] phase={}", job_id, phase)
 
-    def _append_log(self, job: Job, db, message: str):
+    def _append_job_logs(self, job_id: str, text: str) -> None:
+        if not text:
+            return
+        job = self.repo.get(job_id)
+        if not job:
+            return
+        current = job.get("logs") or ""
+        self.repo.update(job_id, {"logs": current + text})
+
+    def _append_log(self, job_id: str, message: str) -> None:
         logger.info(message)
-        job.logs = (job.logs or "") + message + "\n"
-        db.commit()
+        self._append_job_logs(job_id, message + "\n")
 
-    def _execute_job(self, job: Job, db):
+    def _sync_workspace(
+        self,
+        *,
+        job_id: str,
+        workspace_dir: str,
+        target_branch: str,
+        authed_url: str,
+        secrets: list[str],
+        commands_ran: list[str],
+    ) -> None:
+        git_dir = os.path.join(workspace_dir, ".git")
+        if os.path.exists(git_dir):
+            self._append_log(job_id, f"Fetching latest from {target_branch}...")
+            self._run_cmd(["git", "remote", "set-url", "origin", authed_url], cwd=workspace_dir, job_id=job_id, secrets=secrets, commands_ran=commands_ran)
+            self._run_cmd(["git", "fetch", "origin"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
+            self._append_log(job_id, "Cleaning workspace from previous job artifacts...")
+            self._run_cmd(["git", "reset", "--hard", "HEAD"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
+            self._run_cmd(["git", "clean", "-fd"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
+            self._run_cmd(
+                ["git", "checkout", "-B", target_branch, f"origin/{target_branch}"],
+                cwd=workspace_dir,
+                job_id=job_id,
+                commands_ran=commands_ran,
+            )
+            return
+
+        self._append_log(job_id, f"Cloning repository into {workspace_dir}...")
+        self._run_cmd(["git", "clone", "--branch", target_branch, authed_url, workspace_dir], cwd=".", job_id=job_id, secrets=secrets, commands_ran=commands_ran)
+
+    def _execute_job(self, job_id: str) -> None:
+        job = self.repo.get(job_id)
+        if not job:
+            raise RuntimeError(f"Job {job_id} not found")
+
         projects = load_project_configs()
-        project = projects.get(job.project_id)
+        project = projects.get(job["project_id"])
         if not project:
-            raise ValueError(f"Project configuration for '{job.project_id}' not found.")
+            raise ValueError(f"Project configuration for '{job['project_id']}' not found.")
 
         repo_url = project.get("repository_url")
         if not repo_url:
@@ -244,11 +353,11 @@ class WorkerEngine:
         env = os.environ.copy()
         if "env_vars" in project:
             env.update(project["env_vars"])
-        if job.env_vars_override:
-            env.update(job.env_vars_override)
+        if job.get("env_vars_override"):
+            env.update(job["env_vars_override"])
 
         github_token = env.get("GITHUB_TOKEN")
-        secrets = [s for s in [github_token] if s]
+        secrets = [secret for secret in [github_token] if secret]
 
         # Inject token into URL for git operations (never logged — redacted via secrets)
         if github_token and repo_url.startswith("https://github.com/"):
@@ -256,75 +365,70 @@ class WorkerEngine:
         else:
             authed_url = repo_url
 
-        target_branch = job.target_branch or "main"
-        job_branch = f"worker/{job.id[:8]}"
+        target_branch = job.get("target_branch") or "main"
+        job_branch = f"worker/{job_id[:8]}"
 
-        from src.config import _resolve_dir
         workspaces_dir = _resolve_dir(settings.workspaces_dir)
-        workspace_dir = os.path.join(workspaces_dir, job.project_id)
+        workspace_dir = os.path.join(workspaces_dir, job["project_id"])
         os.makedirs(workspaces_dir, exist_ok=True)
 
         # Resume checkpoint: if PR already submitted, skip straight to success
-        if isinstance(job.result, dict) and job.result.get("pr_url"):
-            pr_url = job.result["pr_url"]
-            self._append_log(job, db, f"Resuming: PR already exists at {pr_url} — marking success.")
+        if isinstance(job.get("result"), dict) and job["result"].get("pr_url"):
+            pr_url = job["result"]["pr_url"]
+            self._append_log(job_id, f"Resuming: PR already exists at {pr_url} — marking success.")
             return
 
         commands_ran: list[str] = []
 
         # 1. Sync workspace
-        self._set_phase(job, db, "syncing")
-        if os.path.exists(os.path.join(workspace_dir, ".git")):
-            self._append_log(job, db, f"Fetching latest from {target_branch}...")
-            self._run_cmd(["git", "remote", "set-url", "origin", authed_url], cwd=workspace_dir, job=job, db=db, secrets=secrets, commands_ran=commands_ran)
-            self._run_cmd(["git", "fetch", "origin"], cwd=workspace_dir, job=job, db=db, secrets=secrets, commands_ran=commands_ran)
-            self._run_cmd(["git", "checkout", target_branch], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
-            self._run_cmd(["git", "pull"], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
-        else:
-            self._append_log(job, db, f"Cloning repository into {workspace_dir}...")
-            self._run_cmd(["git", "clone", "--branch", target_branch, authed_url, workspace_dir], cwd=".", job=job, db=db, secrets=secrets, commands_ran=commands_ran)
+        self._set_phase(job_id, "syncing")
+        self._sync_workspace(
+            job_id=job_id,
+            workspace_dir=workspace_dir,
+            target_branch=target_branch,
+            authed_url=authed_url,
+            secrets=secrets,
+            commands_ran=commands_ran,
+        )
 
-        self._run_cmd(["git", "config", "user.name", settings.git_user_name], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
-        self._run_cmd(["git", "config", "user.email", settings.git_user_email], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
-        self._run_cmd(["git", "checkout", "-B", job_branch], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
-        job.branch_name = job_branch
-        db.commit()
+        self._run_cmd(["git", "config", "user.name", settings.git_user_name], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
+        self._run_cmd(["git", "config", "user.email", settings.git_user_email], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
+        self._run_cmd(["git", "checkout", "-B", job_branch], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
+        self.repo.update(job_id, {"branch_name": job_branch})
 
         # Clean any stale worker result file from previous run
         result_file_path = os.path.join(workspace_dir, _WORKER_RESULT_FILE)
         if os.path.exists(result_file_path):
             os.remove(result_file_path)
 
-        pre_head = self._run_cmd(["git", "rev-parse", "HEAD"], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran).strip()
+        pre_head = self._run_cmd(["git", "rev-parse", "HEAD"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran).strip()
 
         # 2. Execute CLI coding agent
-        self._set_phase(job, db, "executing")
+        self._set_phase(job_id, "executing")
         cli_client = project.get("cli_client", "codex")
         cli_model = project.get("cli_model") or _CLIENT_DEFAULT_MODELS.get(cli_client, "")
         cli_effort = project.get("cli_effort", "")
         cli_flags = project.get("cli_flags", "")
 
         prd_file_path = os.path.join(workspace_dir, "PRD.md")
-        with open(prd_file_path, "w") as f:
-            f.write(job.prd_content)
-            f.write("\n")
-            f.write(_build_agent_instructions(project))
+        with open(prd_file_path, "w", encoding="utf-8") as handle:
+            handle.write(job["prd_content"])
+            handle.write("\n")
+            handle.write(_build_agent_instructions(project))
 
-        cmd_parts = [cli_client]
-        cmd_parts.extend(_CLIENT_AUTO_FLAGS.get(cli_client, []))
-        if cli_model:
-            cmd_parts.extend(["--model", cli_model])
-        if cli_client == "codex" and cli_effort:
-            cmd_parts.extend(["--effort", cli_effort])
-        if cli_flags:
-            cmd_parts.extend(shlex.split(cli_flags))
-        cmd_parts.append("Please implement the requirements in PRD.md. Make sure to test your code.")
+        cmd_parts = _build_agent_command(
+            cli_client=cli_client,
+            cli_model=cli_model,
+            cli_effort=cli_effort,
+            cli_flags=cli_flags,
+            on_warning=lambda message: self._append_log(job_id, message),
+        )
 
-        self._append_log(job, db, f"Running: {' '.join(cmd_parts)}")
+        self._append_log(job_id, f"Running: {' '.join(cmd_parts)}")
         try:
-            self._run_cmd(cmd_parts, cwd=workspace_dir, job=job, db=db, env=env, commands_ran=commands_ran)
-        except Exception as e:
-            self._append_log(job, db, f"Agent execution failed: {str(e)}")
+            self._run_cmd(cmd_parts, cwd=workspace_dir, job_id=job_id, env=env, commands_ran=commands_ran)
+        except Exception as exc:
+            self._append_log(job_id, f"Agent execution failed: {str(exc)}")
             raise
 
         # 3. Read agent result file — agent writes this on blocker
@@ -334,103 +438,149 @@ class WorkerEngine:
             if result_type == "blocked":
                 blockers = worker_result.get("blockers", [])
                 summary = worker_result.get("summary", "Agent signaled blocker.")
-                job.result = {"type": "blocked", "blockers": blockers, "summary": summary, "commands_ran": commands_ran}
-                db.commit()
-                raise _BlockedError(f"Agent signaled blocker: {'; '.join(blockers) if blockers else summary}")
+                self.repo.update(
+                    job_id,
+                    {
+                        "result": {
+                            "type": "blocked",
+                            "blockers": blockers,
+                            "summary": summary,
+                            "commands_ran": commands_ran,
+                        }
+                    },
+                )
+                joined = "; ".join(blockers) if blockers else summary
+                raise _BlockedError(f"Agent signaled blocker: {joined}")
 
         # 4. No-changes detection
-        post_head = self._run_cmd(["git", "rev-parse", "HEAD"], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran).strip()
-        status_output = self._run_cmd(["git", "status", "--porcelain"], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
+        post_head = self._run_cmd(["git", "rev-parse", "HEAD"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran).strip()
+        status_output = self._run_cmd(["git", "status", "--porcelain"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
         has_uncommitted = bool(status_output.strip())
         has_committed = pre_head != post_head
 
         if not has_uncommitted and not has_committed:
-            job.result = {
-                "type": "blocked",
-                "blockers": ["Agent produced no file changes"],
-                "summary": "No changes were made to the repository.",
-                "commands_ran": commands_ran,
-            }
-            db.commit()
+            self.repo.update(
+                job_id,
+                {
+                    "result": {
+                        "type": "blocked",
+                        "blockers": ["Agent produced no file changes"],
+                        "summary": "No changes were made to the repository.",
+                        "commands_ran": commands_ran,
+                    }
+                },
+            )
             raise _BlockedError("Agent produced no file changes")
 
         # 5. Commit
-        self._set_phase(job, db, "committing")
+        self._set_phase(job_id, "committing")
         if has_uncommitted:
-            self._run_cmd(["git", "add", "."], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
+            self._run_cmd(["git", "add", "."], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
             # Unstage worker-owned files that must never be committed to any target repo.
             # Use subprocess directly (check=False) so missing files don't raise.
-            for _wf in ("PRD.md", ".devjob_tracker.md"):
-                subprocess.run(["git", "restore", "--staged", _wf], cwd=workspace_dir, capture_output=True)
-            diffstat = self._run_cmd(["git", "diff", "--cached", "--stat"], cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran)
+            for worker_file in ("PRD.md", ".devjob_tracker.md"):
+                subprocess.run(["git", "restore", "--staged", worker_file], cwd=workspace_dir, capture_output=True)
+            diffstat = self._run_cmd(["git", "diff", "--cached", "--stat"], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
             self._run_cmd(
-                ["git", "commit", "-m", f"devworker job {job.id[:8]}: implement PRD"],
-                cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran,
+                ["git", "commit", "-m", f"devworker job {job_id[:8]}: implement PRD"],
+                cwd=workspace_dir,
+                job_id=job_id,
+                commands_ran=commands_ran,
             )
         else:
             diffstat = self._run_cmd(
                 ["git", "show", "--stat", "--pretty=format:", "HEAD"],
-                cwd=workspace_dir, job=job, db=db, commands_ran=commands_ran,
+                cwd=workspace_dir,
+                job_id=job_id,
+                commands_ran=commands_ran,
             )
 
         # 6. Push
-        self._set_phase(job, db, "pushing")
+        self._set_phase(job_id, "pushing")
         push_env = {**env}
         if github_token:
             push_env["GH_TOKEN"] = github_token
         self._run_cmd(
             ["git", "push", "-u", "origin", job_branch],
-            cwd=workspace_dir, job=job, db=db, env=push_env, secrets=secrets, commands_ran=commands_ran,
+            cwd=workspace_dir,
+            job_id=job_id,
+            env=push_env,
+            secrets=secrets,
+            commands_ran=commands_ran,
         )
 
         # 7. PR creation (best-effort)
-        self._set_phase(job, db, "creating_pr")
+        self._set_phase(job_id, "creating_pr")
         pr_url = None
         if shutil.which("gh"):
             try:
+                latest_job = self.repo.get(job_id) or job
+                prd_content = latest_job.get("prd_content", "")
                 pr_body = (
-                    f"{job.prd_content.strip()}\n\n"
+                    f"{prd_content.strip()}\n\n"
                     f"---\n"
-                    f"**Job:** `{job.id}` | **Project:** `{job.project_id}` | **Branch:** `{job_branch}`\n\n"
+                    f"**Job:** `{job_id}` | **Project:** `{job['project_id']}` | **Branch:** `{job_branch}`\n\n"
                     f"<details><summary>Diff stat</summary>\n\n```\n{diffstat.strip()}\n```\n</details>"
                 )
                 pr_output = self._run_cmd(
                     [
-                        "gh", "pr", "create",
-                        "--base", target_branch,
-                        "--head", job_branch,
-                        "--title", f"[Worker] {job.prd_content.splitlines()[0].lstrip('# ').strip()[:72]}",
-                        "--body", pr_body,
+                        "gh",
+                        "pr",
+                        "create",
+                        "--base",
+                        target_branch,
+                        "--head",
+                        job_branch,
+                        "--title",
+                        f"[Worker] {prd_content.splitlines()[0].lstrip('# ').strip()[:72] if prd_content.splitlines() else 'Worker update'}",
+                        "--body",
+                        pr_body,
                     ],
-                    cwd=workspace_dir, job=job, db=db, env=push_env, commands_ran=commands_ran,
+                    cwd=workspace_dir,
+                    job_id=job_id,
+                    env=push_env,
+                    commands_ran=commands_ran,
                 )
                 pr_url = _extract_pr_url(pr_output)
-            except Exception as e:
-                self._append_log(job, db, f"PR creation failed (non-fatal): {e}")
+            except Exception as exc:
+                self._append_log(job_id, f"PR creation failed (non-fatal): {exc}")
         else:
-            self._append_log(job, db, "gh CLI not found — skipping PR creation.")
+            self._append_log(job_id, "gh CLI not found — skipping PR creation.")
 
         # 8. Persist structured result
-        job.result = {
-            "type": "success",
-            "pr_url": pr_url,
-            "branch": job_branch,
-            "diffstat": diffstat.strip() if diffstat else "",
-            "commands_ran": commands_ran,
-            "summary": f"Job {job.id[:8]} completed — branch {job_branch}" + (f", PR: {pr_url}" if pr_url else ""),
-        }
-        db.commit()
+        self.repo.update(
+            job_id,
+            {
+                "result": {
+                    "type": "success",
+                    "pr_url": pr_url,
+                    "branch": job_branch,
+                    "diffstat": diffstat.strip() if diffstat else "",
+                    "commands_ran": commands_ran,
+                    "summary": f"Job {job_id[:8]} completed — branch {job_branch}" + (f", PR: {pr_url}" if pr_url else ""),
+                }
+            },
+        )
 
-    def _run_cmd(self, cmd, cwd, job, db, env=None, secrets=None, commands_ran: list | None = None):
-        _secrets = [s for s in (secrets or []) if s]
+    def _run_cmd(
+        self,
+        cmd: list[str],
+        cwd: str,
+        job_id: str,
+        env: Optional[Dict[str, str]] = None,
+        secrets: Optional[list[str]] = None,
+        commands_ran: Optional[list[str]] = None,
+    ) -> str:
+        protected = [secret for secret in (secrets or []) if secret]
+        codex_json_mode = _is_codex_json_command(cmd)
 
         def _redact(text: str) -> str:
-            text = _ANSI_RE.sub("", text)
-            for s in _secrets:
-                text = text.replace(s, "***")
-            return text
+            redacted = _ANSI_RE.sub("", text)
+            for secret in protected:
+                redacted = redacted.replace(secret, "***")
+            return redacted
 
-        safe_preview = _redact(" ".join(str(c) for c in cmd))
+        safe_preview = _redact(" ".join(str(part) for part in cmd))
         logger.info("$ {}", safe_preview)
         if commands_ran is not None:
             commands_ran.append(safe_preview)
@@ -442,12 +592,13 @@ class WorkerEngine:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,  # new process group for clean abort
+            preexec_fn=os.setsid,
         )
 
-        line_q: queue.Queue[str | None] = queue.Queue()
+        line_q: queue.Queue[Optional[str]] = queue.Queue()
 
-        def _reader():
+        def _reader() -> None:
+            assert proc.stdout is not None
             for line in proc.stdout:
                 line_q.put(line)
             line_q.put(None)
@@ -455,17 +606,18 @@ class WorkerEngine:
         threading.Thread(target=_reader, daemon=True).start()
 
         output_parts: list[str] = []
+        codex_diagnostics: list[str] = []
         last_cancel_check = time.time()
 
         while True:
             try:
                 line = line_q.get(timeout=0.2)
             except queue.Empty:
-                # Check for cancellation every 5 seconds
+                # Check for cancellation every 5 seconds.
                 if time.time() - last_cancel_check >= 5:
                     last_cancel_check = time.time()
-                    db.refresh(job)
-                    if job.status == "cancelled":
+                    latest = self.repo.get(job_id)
+                    if latest and latest.get("status") == "cancelled":
                         try:
                             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                         except ProcessLookupError:
@@ -473,9 +625,23 @@ class WorkerEngine:
                         proc.wait()
                         raise RuntimeError("Job cancelled")
                 continue
+
             if line is None:
                 break
+
             safe_line = _redact(line.rstrip())
+            if codex_json_mode:
+                thinking = _extract_codex_reasoning_line(safe_line)
+                if thinking is not None:
+                    output_parts.append(f"[thinking] {thinking}\n")
+                    logger.info("[thinking] {}", thinking)
+                elif safe_line:
+                    # Keep non-reasoning lines only for failure diagnostics.
+                    codex_diagnostics.append(safe_line)
+                    if len(codex_diagnostics) > 50:
+                        codex_diagnostics.pop(0)
+                continue
+
             output_parts.append(safe_line + "\n")
             logger.info(safe_line)
 
@@ -483,33 +649,39 @@ class WorkerEngine:
         output = "".join(output_parts)
 
         if output.strip():
-            job.logs = (job.logs or "") + output
-            db.commit()
+            self._append_job_logs(job_id, output)
 
         if return_code != 0:
+            if codex_json_mode and codex_diagnostics:
+                diagnostic_text = "\n".join(codex_diagnostics) + "\n"
+                self._append_job_logs(job_id, diagnostic_text)
             error_msg = f"Command failed (exit {return_code}): {safe_preview}"
-            job.logs = (job.logs or "") + error_msg + "\n"
-            db.commit()
+            self._append_job_logs(job_id, error_msg + "\n")
             raise RuntimeError(error_msg)
 
         return output
 
-    def _send_callback(self, job: Job):
+    def _send_callback(self, job: Dict[str, Any]) -> None:
+        callback_url = job.get("callback_url")
+        if not callback_url:
+            return
+
         try:
+            completed_at = job.get("completed_at")
             payload = {
-                "id": job.id,
-                "project_id": job.project_id,
-                "status": job.status,
-                "phase": job.phase,
-                "worker_id": job.worker_id,
-                "branch_name": job.branch_name,
-                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                "result": job.result,
+                "id": job.get("id"),
+                "project_id": job.get("project_id"),
+                "status": job.get("status"),
+                "phase": job.get("phase"),
+                "worker_id": job.get("worker_id"),
+                "branch_name": job.get("branch_name"),
+                "completed_at": completed_at.isoformat() if completed_at else None,
+                "result": job.get("result"),
             }
-            httpx.post(job.callback_url, json=payload, timeout=5.0)
-            logger.info("Sent callback to {}", job.callback_url)
-        except Exception as e:
-            logger.error("Failed to send callback for job {}: {}", job.id, e)
+            httpx.post(callback_url, json=payload, timeout=5.0)
+            logger.info("Sent callback to {}", callback_url)
+        except Exception as exc:
+            logger.error("Failed to send callback for job {}: {}", job.get("id"), exc)
 
 
 # Global instance

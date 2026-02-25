@@ -1,5 +1,5 @@
 # ezenciel-coding
-<!-- Updated: 2026-02-23 -->
+<!-- Updated: 2026-02-25 -->
 
 REST API + worker that runs AI coding agents (codex, gemini, claude) against your repos.
 
@@ -21,6 +21,49 @@ Or with Docker:
 ```bash
 docker-compose up --build -d
 ```
+
+## Backend selection (SQLite or optional MongoDB)
+
+By default, the service uses SQLite:
+
+```env
+DB_PATH=sqlite:///data/worker.db
+```
+
+To use MongoDB as the primary backend instead, set:
+
+```env
+MONGODB_URI=mongodb://localhost:27017/ezenciel_coding
+```
+
+When `MONGODB_URI` is set:
+- Jobs are stored in MongoDB (`jobs` collection)
+- Project configs are stored in MongoDB (`projects` collection)
+- Disk-based `projects/<id>/config.yaml` is not used
+
+## API endpoint: register project
+
+Use `POST /api/v1/projects` with `X-API-Key`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/projects \
+  -H "X-API-Key: your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "my-repo",
+    "repository_url": "https://github.com/my-org/my-repo.git",
+    "cli_client": "codex",
+    "cli_model": "gpt-4o",
+    "cli_effort": null,
+    "cli_flags": null,
+    "system_instructions": "optional per-project prompt",
+    "env_vars": {
+      "GITHUB_TOKEN": "..."
+    }
+  }'
+```
+
+Returns `201 Created` on success and `409` if `project_id` already exists.
 
 ## CLI Agent Credentials
 
@@ -70,6 +113,8 @@ docker exec dev-worker-node sh -lc "gemini --yolo 'say ok'"
 
 ## Register a project
 
+SQLite mode (`MONGODB_URI` unset):
+
 Create a directory under `projects/` with a `config.yaml`:
 
 ```yaml
@@ -84,6 +129,25 @@ cli_flags: "--yes --force"
 Add a `.env` with credentials the agent needs (e.g. `GITHUB_TOKEN`).
 
 See `projects/dummy-repo/` for a full example.
+
+MongoDB mode (`MONGODB_URI` set):
+
+Register projects with the API:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/projects \
+  -H "X-API-Key: your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "my-repo",
+    "repository_url": "https://github.com/my-org/my-repo.git",
+    "cli_client": "codex",
+    "cli_model": "gpt-4o",
+    "env_vars": {
+      "GITHUB_TOKEN": "..."
+    }
+  }'
+```
 
 ## Submit a job
 
