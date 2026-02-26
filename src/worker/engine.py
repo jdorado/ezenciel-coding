@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-25 (require QA evidence and include it in PR body)
+Last edited: 2026-02-26 (normalize GH token names and inject worker self-call env defaults)
 """
 from __future__ import annotations
 
@@ -60,6 +60,36 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
 
 class _BlockedError(Exception):
     """Agent signaled a blocker or produced no changes — needs human attention."""
+
+
+def _is_non_empty_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _apply_runtime_env_defaults(*, env: dict[str, str], job_project_id: str) -> dict[str, str]:
+    """Normalize equivalent env names and inject worker-runtime defaults."""
+    normalized = dict(env)
+
+    gh_token = normalized.get("GH_TOKEN", "")
+    github_token = normalized.get("GITHUB_TOKEN", "")
+    if _is_non_empty_text(github_token) and not _is_non_empty_text(gh_token):
+        normalized["GH_TOKEN"] = github_token
+    if _is_non_empty_text(gh_token) and not _is_non_empty_text(github_token):
+        normalized["GITHUB_TOKEN"] = gh_token
+
+    if not _is_non_empty_text(normalized.get("DEV_WORKER_API_URL")):
+        host_url = os.environ.get("DEV_WORKER_API_URL", "").strip()
+        normalized["DEV_WORKER_API_URL"] = host_url or "http://127.0.0.1:8080"
+
+    if not _is_non_empty_text(normalized.get("DEV_WORKER_API_KEY")):
+        api_key = os.environ.get("API_KEY", "").strip()
+        if api_key:
+            normalized["DEV_WORKER_API_KEY"] = api_key
+
+    if not _is_non_empty_text(normalized.get("DEV_WORKER_PROJECT_ID")):
+        normalized["DEV_WORKER_PROJECT_ID"] = job_project_id
+
+    return normalized
 
 
 def _read_worker_result(path: str) -> Optional[dict]:
@@ -470,6 +500,7 @@ class WorkerEngine:
             env.update(project["env_vars"])
         if job.get("env_vars_override"):
             env.update(job["env_vars_override"])
+        env = _apply_runtime_env_defaults(env=env, job_project_id=job["project_id"])
 
         github_token = env.get("GITHUB_TOKEN")
         secrets = [secret for secret in [github_token] if secret]

@@ -1,5 +1,5 @@
 """ezenciel-coding API entrypoint.
-Last edited: 2026-02-25 (default missing project target_branch to main at job submission)
+Last edited: 2026-02-26 (strengthen run_tool preflight QA contract for worker instructions)
 """
 import os
 from pathlib import Path
@@ -132,6 +132,10 @@ Treat PRD acceptance criteria as executable validation requirements, not prose.
 1. Reproduce first:
 - Before fixing, run a realistic runtime check that exercises the behavior through production-facing entry points.
 - Prefer scripts such as `scripts/run_agent.py` or `scripts/run_tool.py` when those exist.
+- For `run_tool`-style checks, perform setup preflight before declaring code failure:
+  - load required env keys from repo contracts when present (for example `deploy/scripts/runtime_env.required_keys`);
+  - if repository conventions differ, map equivalent keys explicitly (for example `GH_TOKEN` from `GITHUB_TOKEN`);
+  - when tool execution depends on worker API calls, confirm `DEV_WORKER_API_URL`, `DEV_WORKER_API_KEY`, and `DEV_WORKER_PROJECT_ID` are set and endpoint is reachable.
 
 2. Validate after fix:
 - Re-run the same realistic runtime check after code changes.
