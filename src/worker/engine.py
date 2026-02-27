@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-27 (remove implicit DEV_WORKER_* self-call defaults)
+Last edited: 2026-02-27 (block in-worker self-submission of worker jobs)
 """
 from __future__ import annotations
 
@@ -25,6 +25,14 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mABCDEFGHJKSTfnsulh]")
 WORKER_NAME = f"ezenciel-worker:{socket.gethostname()}"
 _WORKER_RESULT_FILE = ".worker_result.json"
 _DEVJOB_TRACKER_FILE = ".devjob_tracker.md"
+_SELF_JOB_SUBMISSION_ENV_KEYS = (
+    "DEV_WORKER_API_URL",
+    "DEV_WORKER_API_KEY",
+    "DEV_WORKER_PROJECT_ID",
+    "WORKER_API_URL",
+    "WORKER_API_KEY",
+    "WORKER_PROJECT_ID",
+)
 
 # Built-in non-interactive / full-permission flags per CLI client.
 _CLIENT_AUTO_FLAGS: dict[str, list[str]] = {
@@ -60,6 +68,17 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
 
 class _BlockedError(Exception):
     """Agent signaled a blocker or produced no changes — needs human attention."""
+
+
+def _strip_self_job_submission_env(env: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Remove env keys that would let worker jobs enqueue new worker jobs."""
+    sanitized = dict(env)
+    removed: list[str] = []
+    for key in _SELF_JOB_SUBMISSION_ENV_KEYS:
+        if key in sanitized:
+            removed.append(key)
+            sanitized.pop(key, None)
+    return sanitized, removed
 
 
 def _read_worker_result(path: str) -> Optional[dict]:
@@ -470,6 +489,13 @@ class WorkerEngine:
             env.update(project["env_vars"])
         if job.get("env_vars_override"):
             env.update(job["env_vars_override"])
+        env, removed_self_job_keys = _strip_self_job_submission_env(env)
+        if removed_self_job_keys:
+            self._append_log(
+                job_id,
+                "Removed worker job-submission env keys for this run: "
+                + ", ".join(sorted(removed_self_job_keys)),
+            )
 
         github_token = env.get("GITHUB_TOKEN")
         secrets = [secret for secret in [github_token] if secret]

@@ -1,5 +1,5 @@
 """Worker engine tests.
-Last edited: 2026-02-27 (remove implicit worker self-call env default expectations)
+Last edited: 2026-02-27 (verify worker strips self job-submission env keys)
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from src.worker.engine import (
     _extract_codex_reasoning_line,
     _is_codex_json_command,
     _load_qa_evidence_from_tracker,
+    _strip_self_job_submission_env,
 )
 
 
@@ -177,6 +178,34 @@ def test_build_agent_command_codex_adds_json_when_not_in_flags() -> None:
 
     assert cmd[0:3] == ["codex", "exec", "--json"]
     assert cmd.count("--json") == 1
+
+
+def test_strip_self_job_submission_env_removes_worker_api_keys() -> None:
+    env = {
+        "GITHUB_TOKEN": "ghp_abc",
+        "DEV_WORKER_API_URL": "http://127.0.0.1:5100",
+        "DEV_WORKER_API_KEY": "worker-key",
+        "DEV_WORKER_PROJECT_ID": "stocks",
+        "OPENROUTER_API_KEY": "router-key",
+    }
+
+    sanitized, removed = _strip_self_job_submission_env(env)
+
+    assert sanitized["GITHUB_TOKEN"] == "ghp_abc"
+    assert sanitized["OPENROUTER_API_KEY"] == "router-key"
+    assert "DEV_WORKER_API_URL" not in sanitized
+    assert "DEV_WORKER_API_KEY" not in sanitized
+    assert "DEV_WORKER_PROJECT_ID" not in sanitized
+    assert removed == ["DEV_WORKER_API_URL", "DEV_WORKER_API_KEY", "DEV_WORKER_PROJECT_ID"]
+
+
+def test_strip_self_job_submission_env_keeps_env_when_not_present() -> None:
+    env = {"GITHUB_TOKEN": "ghp_abc"}
+
+    sanitized, removed = _strip_self_job_submission_env(env)
+
+    assert sanitized == env
+    assert removed == []
 
 
 def test_build_agent_instructions_appends_worker_runtime_contract() -> None:
