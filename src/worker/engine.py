@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-26 (normalize GH token names and inject worker self-call env defaults)
+Last edited: 2026-02-27 (standardize on GITHUB_TOKEN and keep worker self-call env defaults)
 """
 from __future__ import annotations
 
@@ -67,15 +67,8 @@ def _is_non_empty_text(value: object) -> bool:
 
 
 def _apply_runtime_env_defaults(*, env: dict[str, str], job_project_id: str) -> dict[str, str]:
-    """Normalize equivalent env names and inject worker-runtime defaults."""
+    """Inject worker-runtime defaults for dependent service calls."""
     normalized = dict(env)
-
-    gh_token = normalized.get("GH_TOKEN", "")
-    github_token = normalized.get("GITHUB_TOKEN", "")
-    if _is_non_empty_text(github_token) and not _is_non_empty_text(gh_token):
-        normalized["GH_TOKEN"] = github_token
-    if _is_non_empty_text(gh_token) and not _is_non_empty_text(github_token):
-        normalized["GITHUB_TOKEN"] = gh_token
 
     if not _is_non_empty_text(normalized.get("DEV_WORKER_API_URL")):
         host_url = os.environ.get("DEV_WORKER_API_URL", "").strip()
@@ -664,7 +657,7 @@ class WorkerEngine:
         self._set_phase(job_id, "pushing")
         push_env = {**env}
         if github_token:
-            push_env["GH_TOKEN"] = github_token
+            push_env["GITHUB_TOKEN"] = github_token
         self._run_cmd(
             ["git", "push", "-u", "origin", job_branch],
             cwd=workspace_dir,

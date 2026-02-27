@@ -1,5 +1,5 @@
 """Worker engine tests.
-Last edited: 2026-02-26 (runtime env normalization for run_tool/dev worker self-calls)
+Last edited: 2026-02-27 (standardize runtime token contract on GITHUB_TOKEN)
 """
 from __future__ import annotations
 
@@ -180,7 +180,7 @@ def test_build_agent_command_codex_adds_json_when_not_in_flags() -> None:
     assert cmd.count("--json") == 1
 
 
-def test_apply_runtime_env_defaults_sets_aliases_and_project_id(monkeypatch) -> None:
+def test_apply_runtime_env_defaults_keeps_github_token_and_sets_project_id(monkeypatch) -> None:
     monkeypatch.delenv("DEV_WORKER_API_URL", raising=False)
     monkeypatch.delenv("API_KEY", raising=False)
 
@@ -190,20 +190,18 @@ def test_apply_runtime_env_defaults_sets_aliases_and_project_id(monkeypatch) -> 
     )
 
     assert normalized["GITHUB_TOKEN"] == "ghp_123"
-    assert normalized["GH_TOKEN"] == "ghp_123"
     assert normalized["DEV_WORKER_PROJECT_ID"] == "stocks"
 
 
-def test_apply_runtime_env_defaults_prefers_existing_and_injects_worker_runtime(monkeypatch) -> None:
+def test_apply_runtime_env_defaults_preserves_existing_worker_url_and_injects_api_key(monkeypatch) -> None:
     monkeypatch.setenv("DEV_WORKER_API_URL", "http://host.docker.internal:5100")
     monkeypatch.setenv("API_KEY", "worker-api-key")
 
     normalized = _apply_runtime_env_defaults(
-        env={"GH_TOKEN": "gh_abc", "DEV_WORKER_API_URL": "http://override:9999"},
+        env={"GITHUB_TOKEN": "gh_abc", "DEV_WORKER_API_URL": "http://override:9999"},
         job_project_id="stocks",
     )
 
-    assert normalized["GH_TOKEN"] == "gh_abc"
     assert normalized["GITHUB_TOKEN"] == "gh_abc"
     assert normalized["DEV_WORKER_API_URL"] == "http://override:9999"
     assert normalized["DEV_WORKER_API_KEY"] == "worker-api-key"
