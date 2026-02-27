@@ -1,11 +1,11 @@
 # Registration System Instructions QA Contract
-<!-- Updated: 2026-02-26 -->
+<!-- Updated: 2026-02-26 (generalize runtime preflight wording across projects) -->
 
 ## Context
 
 Recent jobs passed with weak or incomplete QA evidence (for example, unit-only validation with no realistic runtime path such as `scripts/run_agent.py` / `scripts/run_tool.py`). Project registration previously persisted `system_instructions` as-is, so strict QA policy was optional and inconsistent.
 
-Follow-up gap (2026-02-26): some `run_tool.py` checks still failed before code paths due missing env or worker connectivity preflight, and workers treated those as implementation failures instead of setup blockers.
+Follow-up gap (2026-02-26): some runtime checks failed before code paths due missing env/service preflight, and workers treated those as implementation failures instead of setup blockers.
 
 ## Goal
 
@@ -15,7 +15,7 @@ Enforce a mandatory QA evidence contract at project registration time so every s
 2. focused automated tests;
 3. explicit command-level QA evidence in final report;
 4. blocked state when runtime verification prerequisites are missing.
-5. explicit preflight for `run_tool.py` validations (required env keys + worker API readiness when applicable).
+5. explicit preflight for runtime validation paths (required env/config + dependency readiness when applicable).
 
 ## Scope
 
@@ -34,10 +34,10 @@ Enforce a mandatory QA evidence contract at project registration time so every s
 5. Extend API tests to verify:
    - custom instructions preserve user text and include QA contract;
    - missing instructions receive injected QA contract.
-6. Update QA contract text to force `run_tool.py` preflight checks:
-   - read env key contracts when available (`deploy/scripts/runtime_env.required_keys`);
-   - map equivalent env names when repositories differ (`GH_TOKEN` vs `GITHUB_TOKEN`);
-   - verify `DEV_WORKER_API_URL`/`DEV_WORKER_API_KEY`/`DEV_WORKER_PROJECT_ID` and reachability for worker-backed tools.
+6. Update QA contract text to force generic runtime preflight checks:
+   - read env/config contracts from repository-owned docs/files;
+   - map equivalent variable names when repository conventions differ from worker config;
+   - verify required dependent services are configured and reachable before classifying failures as code regressions.
 
 ## Checklist
 
@@ -46,7 +46,7 @@ Enforce a mandatory QA evidence contract at project registration time so every s
 - [x] Ensure `system.md` write path uses persisted composed payload
 - [x] Add/adjust tests for custom and default instruction registration
 - [x] Run test verification and capture results
-- [x] Add explicit `run_tool.py` preflight guidance to registration QA contract
+- [x] Add explicit runtime preflight guidance to registration QA contract
 
 ## Verification
 
