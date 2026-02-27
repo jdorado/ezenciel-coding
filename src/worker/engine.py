@@ -1,5 +1,5 @@
 """Worker engine: claims queued jobs, runs CLI coding agents, commits and opens PRs.
-Last edited: 2026-02-27 (block in-worker self-submission of worker jobs)
+Last edited: 2026-02-27 (auto-run repo standard pre-setup script when present)
 """
 from __future__ import annotations
 
@@ -32,6 +32,11 @@ _SELF_JOB_SUBMISSION_ENV_KEYS = (
     "WORKER_API_URL",
     "WORKER_API_KEY",
     "WORKER_PROJECT_ID",
+)
+_PRE_JOB_SETUP_TIMEOUT_SECONDS_DEFAULT = 1800
+_DEFAULT_PRE_JOB_SETUP_SCRIPT_CANDIDATES = (
+    "deploy/scripts/worker_pre_setup.sh",
+    "scripts/worker_pre_setup.sh",
 )
 
 # Built-in non-interactive / full-permission flags per CLI client.
@@ -79,6 +84,69 @@ def _strip_self_job_submission_env(env: dict[str, str]) -> tuple[dict[str, str],
             removed.append(key)
             sanitized.pop(key, None)
     return sanitized, removed
+
+
+def _find_default_pre_job_setup_command(workspace_dir: str) -> Optional[str]:
+    for relative_path in _DEFAULT_PRE_JOB_SETUP_SCRIPT_CANDIDATES:
+        candidate = os.path.join(workspace_dir, relative_path)
+        if os.path.isfile(candidate):
+            return f"bash {shlex.quote(relative_path)}"
+    return None
+
+
+def _resolve_pre_job_setup_commands(project: dict[str, Any], *, workspace_dir: Optional[str] = None) -> list[str]:
+    """Resolve deterministic setup commands.
+
+    Precedence:
+    1) project config overrides (`pre_job_setup_command(s)`)
+    2) default repo script convention if present:
+       - deploy/scripts/worker_pre_setup.sh
+       - scripts/worker_pre_setup.sh
+    """
+    commands: list[str] = []
+
+    single = project.get("pre_job_setup_command")
+    if isinstance(single, str):
+        normalized = single.strip()
+        if normalized:
+            commands.append(normalized)
+
+    multi = project.get("pre_job_setup_commands")
+    if isinstance(multi, list):
+        for entry in multi:
+            if isinstance(entry, str):
+                normalized = entry.strip()
+                if normalized:
+                    commands.append(normalized)
+
+    if commands:
+        return commands
+
+    if workspace_dir:
+        detected = _find_default_pre_job_setup_command(workspace_dir)
+        if detected:
+            return [detected]
+
+    return []
+
+
+def _resolve_pre_job_setup_timeout_seconds(project: dict[str, Any]) -> int:
+    raw = project.get("pre_job_setup_timeout_seconds")
+    if isinstance(raw, int) and raw > 0:
+        return raw
+    return _PRE_JOB_SETUP_TIMEOUT_SECONDS_DEFAULT
+
+
+def _build_pre_job_setup_instruction(commands: list[str]) -> str:
+    lines: list[str] = [
+        "## Pre-Setup Contract",
+        "The worker already executed deterministic repository setup before your run.",
+        "Do not re-install dependencies or re-bootstrap runtime unless strictly required by a failing test tied to this PRD.",
+        "If setup appears broken, write `.worker_result.json` with `type=blocked` describing setup failure and stop.",
+        "Executed setup commands:",
+    ]
+    lines.extend(f"- `{command}`" for command in commands)
+    return "\n".join(lines)
 
 
 def _read_worker_result(path: str) -> Optional[dict]:
@@ -187,11 +255,16 @@ Do NOT write `.worker_result.json` on success.
 """
 
 
-def _build_agent_instructions(project: dict) -> str:
+def _build_agent_instructions(project: dict, *, pre_setup_commands: Optional[list[str]] = None) -> str:
     sections: list[str] = []
     configured_prompt = project.get("system_instructions")
     if isinstance(configured_prompt, str) and configured_prompt.strip():
         sections.append(configured_prompt.strip())
+    resolved_pre_setup_commands = pre_setup_commands
+    if resolved_pre_setup_commands is None:
+        resolved_pre_setup_commands = _resolve_pre_job_setup_commands(project)
+    if resolved_pre_setup_commands:
+        sections.append(_build_pre_job_setup_instruction(resolved_pre_setup_commands))
     sections.append(_default_agent_instructions().strip())
     return "\n\n".join(sections).strip() + "\n"
 
@@ -537,6 +610,17 @@ class WorkerEngine:
         self._run_cmd(["git", "checkout", "-B", job_branch], cwd=workspace_dir, job_id=job_id, commands_ran=commands_ran)
         self.repo.update(job_id, {"branch_name": job_branch})
 
+        pre_setup_commands = _resolve_pre_job_setup_commands(project, workspace_dir=workspace_dir)
+        pre_setup_timeout_seconds = _resolve_pre_job_setup_timeout_seconds(project)
+        self._run_pre_job_setup(
+            job_id=job_id,
+            pre_setup_commands=pre_setup_commands,
+            pre_setup_timeout_seconds=pre_setup_timeout_seconds,
+            workspace_dir=workspace_dir,
+            env=env,
+            commands_ran=commands_ran,
+        )
+
         # Clean any stale worker result file from previous run
         result_file_path = os.path.join(workspace_dir, _WORKER_RESULT_FILE)
         if os.path.exists(result_file_path):
@@ -555,7 +639,7 @@ class WorkerEngine:
         with open(prd_file_path, "w", encoding="utf-8") as handle:
             handle.write(job["prd_content"])
             handle.write("\n")
-            handle.write(_build_agent_instructions(project))
+            handle.write(_build_agent_instructions(project, pre_setup_commands=pre_setup_commands))
 
         cmd_parts = _build_agent_command(
             cli_client=cli_client,
@@ -732,6 +816,7 @@ class WorkerEngine:
         env: Optional[Dict[str, str]] = None,
         secrets: Optional[list[str]] = None,
         commands_ran: Optional[list[str]] = None,
+        timeout_seconds: Optional[int] = None,
     ) -> str:
         protected = [secret for secret in (secrets or []) if secret]
         codex_json_mode = _is_codex_json_command(cmd)
@@ -772,11 +857,19 @@ class WorkerEngine:
         codex_assistant_fallback: list[str] = []
         saw_codex_thinking = False
         last_cancel_check = time.time()
+        started_at = time.time()
 
         while True:
             try:
                 line = line_q.get(timeout=0.2)
             except queue.Empty:
+                if timeout_seconds is not None and (time.time() - started_at) > timeout_seconds:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    proc.wait()
+                    raise RuntimeError(f"Command timed out after {timeout_seconds}s: {safe_preview}")
                 # Check for cancellation every 5 seconds.
                 if time.time() - last_cancel_check >= 5:
                     last_cancel_check = time.time()
@@ -842,6 +935,43 @@ class WorkerEngine:
             raise RuntimeError(error_msg)
 
         return output
+
+    def _run_pre_job_setup(
+        self,
+        *,
+        job_id: str,
+        pre_setup_commands: list[str],
+        pre_setup_timeout_seconds: int,
+        workspace_dir: str,
+        env: dict[str, str],
+        commands_ran: list[str],
+    ) -> None:
+        if not pre_setup_commands:
+            return
+
+        self._set_phase(job_id, "pre_setup")
+        self._append_log(
+            job_id,
+            "Running deterministic pre-job setup "
+            f"({len(pre_setup_commands)} command(s), timeout={pre_setup_timeout_seconds}s each).",
+        )
+
+        for index, command in enumerate(pre_setup_commands, start=1):
+            self._append_log(job_id, f"Pre-setup [{index}/{len(pre_setup_commands)}]: {command}")
+            try:
+                self._run_cmd(
+                    ["bash", "-lc", command],
+                    cwd=workspace_dir,
+                    job_id=job_id,
+                    env=env,
+                    commands_ran=commands_ran,
+                    timeout_seconds=pre_setup_timeout_seconds,
+                )
+            except Exception as exc:
+                raise _BlockedError(
+                    "Pre-job setup failed before coding execution. "
+                    f"Command `{command}` error: {exc}"
+                ) from exc
 
 # Global instance
 worker_engine = WorkerEngine()

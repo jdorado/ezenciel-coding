@@ -1,5 +1,5 @@
 """Worker engine tests.
-Last edited: 2026-02-27 (verify worker strips self job-submission env keys)
+Last edited: 2026-02-27 (auto-detect repo pre-setup script convention)
 """
 from __future__ import annotations
 
@@ -14,15 +14,20 @@ from src.database.session import SessionLocal, engine
 from src.models.job import Base, Job
 from src.worker.engine import (
     WorkerEngine,
+    _BlockedError,
     _build_agent_instructions,
+    _build_pre_job_setup_instruction,
     _build_pr_body,
     _extract_codex_agent_message_line,
     _extract_codex_error_line,
     _extract_markdown_section,
     _build_agent_command,
     _extract_codex_reasoning_line,
+    _find_default_pre_job_setup_command,
     _is_codex_json_command,
     _load_qa_evidence_from_tracker,
+    _resolve_pre_job_setup_commands,
+    _resolve_pre_job_setup_timeout_seconds,
     _strip_self_job_submission_env,
 )
 
@@ -180,6 +185,46 @@ def test_build_agent_command_codex_adds_json_when_not_in_flags() -> None:
     assert cmd.count("--json") == 1
 
 
+def test_resolve_pre_job_setup_commands_collects_single_and_multi() -> None:
+    project = {
+        "pre_job_setup_command": "poetry install --no-root",
+        "pre_job_setup_commands": ["python -m pip --version", "", "  poetry run baml-cli generate --from baml_src  "],
+    }
+
+    assert _resolve_pre_job_setup_commands(project, workspace_dir="/tmp/work") == [
+        "poetry install --no-root",
+        "python -m pip --version",
+        "poetry run baml-cli generate --from baml_src",
+    ]
+
+
+def test_resolve_pre_job_setup_commands_auto_detects_repo_script(tmp_path) -> None:
+    script_dir = tmp_path / "deploy" / "scripts"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    script = script_dir / "worker_pre_setup.sh"
+    script.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+
+    commands = _resolve_pre_job_setup_commands({}, workspace_dir=str(tmp_path))
+
+    assert commands == ["bash deploy/scripts/worker_pre_setup.sh"]
+
+
+def test_find_default_pre_job_setup_command_returns_none_when_missing(tmp_path) -> None:
+    assert _find_default_pre_job_setup_command(str(tmp_path)) is None
+
+
+def test_resolve_pre_job_setup_timeout_uses_default_when_missing() -> None:
+    assert _resolve_pre_job_setup_timeout_seconds({}) == 1800
+
+
+def test_build_pre_job_setup_instruction_lists_commands() -> None:
+    text = _build_pre_job_setup_instruction(["poetry install --no-root"])
+
+    assert "## Pre-Setup Contract" in text
+    assert "Do not re-install dependencies" in text
+    assert "- `poetry install --no-root`" in text
+
+
 def test_strip_self_job_submission_env_removes_worker_api_keys() -> None:
     env = {
         "GITHUB_TOKEN": "ghp_abc",
@@ -209,9 +254,15 @@ def test_strip_self_job_submission_env_keeps_env_when_not_present() -> None:
 
 
 def test_build_agent_instructions_appends_worker_runtime_contract() -> None:
-    instructions = _build_agent_instructions({"system_instructions": "Custom project prompt"})
+    instructions = _build_agent_instructions(
+        {
+            "system_instructions": "Custom project prompt",
+            "pre_job_setup_command": "poetry install --no-root --no-ansi",
+        }
+    )
 
     assert instructions.startswith("Custom project prompt")
+    assert "## Pre-Setup Contract" in instructions
     assert "## Worker Instructions" in instructions
     assert "## QA Evidence" in instructions
 
@@ -221,6 +272,49 @@ def test_build_agent_instructions_uses_worker_runtime_contract_when_empty() -> N
 
     assert "## Worker Instructions" in instructions
     assert "## QA Evidence" in instructions
+
+
+def test_run_pre_job_setup_runs_commands_with_timeout(mocker) -> None:
+    worker = WorkerEngine(repository=SQLiteJobRepository())
+    run_cmd = mocker.patch.object(worker, "_run_cmd", return_value="")
+    mocker.patch.object(worker, "_append_log")
+    mocker.patch.object(worker, "_set_phase")
+
+    worker._run_pre_job_setup(
+        job_id="job-setup-1",
+        pre_setup_commands=["poetry install --no-root", "poetry run baml-cli generate --from baml_src"],
+        pre_setup_timeout_seconds=123,
+        workspace_dir="/tmp/work",
+        env={"A": "B"},
+        commands_ran=[],
+    )
+
+    assert run_cmd.call_count == 2
+    first_call = run_cmd.call_args_list[0]
+    second_call = run_cmd.call_args_list[1]
+    assert first_call.args[0] == ["bash", "-lc", "poetry install --no-root"]
+    assert second_call.args[0] == ["bash", "-lc", "poetry run baml-cli generate --from baml_src"]
+    assert first_call.kwargs["timeout_seconds"] == 123
+    assert second_call.kwargs["timeout_seconds"] == 123
+
+
+def test_run_pre_job_setup_raises_blocked_error_on_failure(mocker) -> None:
+    worker = WorkerEngine(repository=SQLiteJobRepository())
+    mocker.patch.object(worker, "_append_log")
+    mocker.patch.object(worker, "_set_phase")
+    mocker.patch.object(worker, "_run_cmd", side_effect=RuntimeError("boom"))
+
+    with pytest.raises(_BlockedError) as exc:
+        worker._run_pre_job_setup(
+            job_id="job-setup-2",
+            pre_setup_commands=["poetry install --no-root"],
+            pre_setup_timeout_seconds=123,
+            workspace_dir="/tmp/work",
+            env={},
+            commands_ran=[],
+        )
+
+    assert "Pre-job setup failed before coding execution" in str(exc.value)
 
 
 def test_extract_codex_reasoning_line_reads_reasoning_event() -> None:

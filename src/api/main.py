@@ -1,5 +1,5 @@
 """ezenciel-coding API entrypoint.
-Last edited: 2026-02-26 (generalize runtime preflight QA contract for all projects)
+Last edited: 2026-02-27 (add generic pre-job setup fields to project registration)
 """
 import os
 from pathlib import Path
@@ -88,6 +88,9 @@ class ProjectRegisterRequest(BaseModel):
     cli_effort: Optional[str] = None
     cli_flags: Optional[str] = None
     system_instructions: Optional[str] = None
+    pre_job_setup_command: Optional[str] = None
+    pre_job_setup_commands: Optional[List[str]] = None
+    pre_job_setup_timeout_seconds: Optional[int] = None
     env_vars: Dict[str, str] = Field(default_factory=dict)
 
     @field_validator("project_id")
@@ -121,6 +124,9 @@ class ProjectResponse(BaseModel):
     cli_effort: Optional[str] = None
     cli_flags: Optional[str] = None
     system_instructions: Optional[str] = None
+    pre_job_setup_command: Optional[str] = None
+    pre_job_setup_commands: Optional[List[str]] = None
+    pre_job_setup_timeout_seconds: Optional[int] = None
 
 
 _TERMINAL_STATUSES = {"success", "failed", "blocked", "cancelled"}
@@ -184,6 +190,12 @@ def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, 
         payload["cli_effort"] = request.cli_effort
     if request.cli_flags is not None:
         payload["cli_flags"] = request.cli_flags
+    if request.pre_job_setup_command is not None:
+        payload["pre_job_setup_command"] = request.pre_job_setup_command
+    if request.pre_job_setup_commands is not None:
+        payload["pre_job_setup_commands"] = request.pre_job_setup_commands
+    if request.pre_job_setup_timeout_seconds is not None:
+        payload["pre_job_setup_timeout_seconds"] = request.pre_job_setup_timeout_seconds
     return payload
 
 
@@ -197,6 +209,9 @@ def _build_project_response(project_id: str, payload: Dict[str, Any]) -> Project
         cli_effort=payload.get("cli_effort"),
         cli_flags=payload.get("cli_flags"),
         system_instructions=payload.get("system_instructions"),
+        pre_job_setup_command=payload.get("pre_job_setup_command"),
+        pre_job_setup_commands=payload.get("pre_job_setup_commands"),
+        pre_job_setup_timeout_seconds=payload.get("pre_job_setup_timeout_seconds"),
     )
 
 

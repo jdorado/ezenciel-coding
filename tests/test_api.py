@@ -1,5 +1,5 @@
 """API tests for job submission and project registration.
-Last edited: 2026-02-25 (missing project target_branch defaults to main on submit)
+Last edited: 2026-02-27 (cover generic pre-job setup registration fields)
 """
 from __future__ import annotations
 
@@ -172,6 +172,9 @@ def test_register_project_success() -> None:
         "cli_client": "claude",
         "cli_model": "claude-opus-4-6",
         "system_instructions": "Use strict test-first workflow.",
+        "pre_job_setup_command": "poetry install --no-root --no-ansi",
+        "pre_job_setup_commands": ["poetry run baml-cli generate --from baml_src"],
+        "pre_job_setup_timeout_seconds": 1200,
         "env_vars": {"GITHUB_TOKEN": "token123"},
     }
 
@@ -183,6 +186,9 @@ def test_register_project_success() -> None:
     assert data["target_branch"] == payload["target_branch"]
     assert payload["system_instructions"] in data["system_instructions"]
     assert _SYSTEM_INSTRUCTIONS_QA_HEADER in data["system_instructions"]
+    assert data["pre_job_setup_command"] == payload["pre_job_setup_command"]
+    assert data["pre_job_setup_commands"] == payload["pre_job_setup_commands"]
+    assert data["pre_job_setup_timeout_seconds"] == payload["pre_job_setup_timeout_seconds"]
     assert "env_vars" not in data
     assert "callback_url" not in data
 
