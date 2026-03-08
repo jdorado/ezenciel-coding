@@ -91,6 +91,7 @@ class ProjectRegisterRequest(BaseModel):
     pre_job_setup_command: Optional[str] = None
     pre_job_setup_commands: Optional[List[str]] = None
     pre_job_setup_timeout_seconds: Optional[int] = None
+    pr_reviewer_email: Optional[str] = None
     env_vars: Dict[str, str] = Field(default_factory=dict)
 
     @field_validator("project_id")
@@ -114,6 +115,18 @@ class ProjectRegisterRequest(BaseModel):
             raise ValueError("target_branch must be non-empty")
         return value.strip()
 
+    @field_validator("pr_reviewer_email")
+    @classmethod
+    def validate_pr_reviewer_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized):
+            raise ValueError("pr_reviewer_email must be a valid email address")
+        return normalized
+
 
 class ProjectResponse(BaseModel):
     project_id: str
@@ -127,6 +140,7 @@ class ProjectResponse(BaseModel):
     pre_job_setup_command: Optional[str] = None
     pre_job_setup_commands: Optional[List[str]] = None
     pre_job_setup_timeout_seconds: Optional[int] = None
+    pr_reviewer_email: Optional[str] = None
 
 
 _TERMINAL_STATUSES = {"success", "failed", "blocked", "cancelled"}
@@ -196,6 +210,8 @@ def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, 
         payload["pre_job_setup_commands"] = request.pre_job_setup_commands
     if request.pre_job_setup_timeout_seconds is not None:
         payload["pre_job_setup_timeout_seconds"] = request.pre_job_setup_timeout_seconds
+    if request.pr_reviewer_email is not None:
+        payload["pr_reviewer_email"] = request.pr_reviewer_email
     return payload
 
 
@@ -212,6 +228,7 @@ def _build_project_response(project_id: str, payload: Dict[str, Any]) -> Project
         pre_job_setup_command=payload.get("pre_job_setup_command"),
         pre_job_setup_commands=payload.get("pre_job_setup_commands"),
         pre_job_setup_timeout_seconds=payload.get("pre_job_setup_timeout_seconds"),
+        pr_reviewer_email=payload.get("pr_reviewer_email"),
     )
 
 

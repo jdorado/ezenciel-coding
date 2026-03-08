@@ -149,6 +149,8 @@ register_payload: dict[str, Any] = {
     "system_instructions": system_instructions if system_instructions else None,
     "env_vars": env_vars,
 }
+if config_data.get("pr_reviewer_email") is not None:
+    register_payload["pr_reviewer_email"] = config_data.get("pr_reviewer_email")
 
 if prd_file:
     prd_content = Path(prd_file).read_text(encoding="utf-8").strip()

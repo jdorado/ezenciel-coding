@@ -7,10 +7,13 @@ import os
 import shutil
 from pathlib import Path
 
+import mongomock
 from fastapi.testclient import TestClient
 
 from src.api.main import app, _SYSTEM_INSTRUCTIONS_QA_HEADER, _build_registered_system_instructions
 from src.config import _resolve_dir, settings
+from src.database import mongo as mongo_module
+from src.database.mongo import get_mongo_db
 from src.database.repository import _build_repository
 from src.database.session import SessionLocal, engine
 from src.models.job import Job
@@ -78,6 +81,7 @@ def teardown_module(module):
     db.close()
 
     settings.mongodb_uri = _ORIGINAL_MONGODB_URI
+    get_mongo_db.cache_clear()
     _build_repository.cache_clear()
 
 
@@ -175,6 +179,7 @@ def test_register_project_success() -> None:
         "pre_job_setup_command": "poetry install --no-root --no-ansi",
         "pre_job_setup_commands": ["poetry run baml-cli generate --from baml_src"],
         "pre_job_setup_timeout_seconds": 1200,
+        "pr_reviewer_email": "reviewer@example.com",
         "env_vars": {"GITHUB_TOKEN": "token123"},
     }
 
@@ -189,6 +194,7 @@ def test_register_project_success() -> None:
     assert data["pre_job_setup_command"] == payload["pre_job_setup_command"]
     assert data["pre_job_setup_commands"] == payload["pre_job_setup_commands"]
     assert data["pre_job_setup_timeout_seconds"] == payload["pre_job_setup_timeout_seconds"]
+    assert data["pr_reviewer_email"] == payload["pr_reviewer_email"]
     assert "env_vars" not in data
     assert "callback_url" not in data
 
@@ -259,3 +265,45 @@ def test_register_project_validation() -> None:
     }
     response = client.post("/api/v1/projects", json=payload, headers=_headers())
     assert response.status_code == 422
+
+
+def test_register_project_validation_rejects_invalid_reviewer_email() -> None:
+    payload = {
+        "project_id": "project-api-invalid-reviewer",
+        "repository_url": "https://github.com/example/project-api-invalid-reviewer.git",
+        "target_branch": "main",
+        "cli_client": "codex",
+        "pr_reviewer_email": "not-an-email",
+    }
+    response = client.post("/api/v1/projects", json=payload, headers=_headers())
+    assert response.status_code == 422
+
+
+def test_register_project_mongo_persists_reviewer_email(monkeypatch) -> None:
+    fake_client = mongomock.MongoClient()
+    monkeypatch.setattr(mongo_module, "MongoClient", lambda *args, **kwargs: fake_client)
+    get_mongo_db.cache_clear()
+    original_uri = settings.mongodb_uri
+    settings.mongodb_uri = "mongodb://localhost:27017/test_projects"
+    _build_repository.cache_clear()
+
+    payload = {
+        "project_id": "project-api-mongo",
+        "repository_url": "https://github.com/example/project-api-mongo.git",
+        "target_branch": "main",
+        "cli_client": "codex",
+        "pr_reviewer_email": "mongo-reviewer@example.com",
+    }
+    response = client.post("/api/v1/projects", json=payload, headers=_headers())
+    assert response.status_code == 201
+    data = response.json()
+    assert data["pr_reviewer_email"] == payload["pr_reviewer_email"]
+
+    db = get_mongo_db()
+    doc = db["projects"].find_one({"project_id": payload["project_id"]})
+    assert doc is not None
+    assert doc["pr_reviewer_email"] == payload["pr_reviewer_email"]
+
+    settings.mongodb_uri = original_uri
+    get_mongo_db.cache_clear()
+    _build_repository.cache_clear()

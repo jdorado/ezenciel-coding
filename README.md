@@ -57,6 +57,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "cli_model": "gpt-4o",
     "cli_effort": null,
     "cli_flags": null,
+    "pr_reviewer_email": "reviewer@example.com",
     "system_instructions": "optional per-project prompt",
     "env_vars": {
       "GITHUB_TOKEN": "..."
@@ -126,6 +127,7 @@ cli_client: "codex"       # codex | gemini | claude
 cli_model: "gpt-4o"
 cli_effort: "high"
 cli_flags: "--yes --force"
+pr_reviewer_email: "reviewer@example.com"
 ```
 
 Add a `.env` with credentials the agent needs (e.g. `GITHUB_TOKEN`).
@@ -146,6 +148,7 @@ curl -X POST http://localhost:8080/api/v1/projects \
     "target_branch": "main",
     "cli_client": "codex",
     "cli_model": "gpt-4o",
+    "pr_reviewer_email": "reviewer@example.com",
     "env_vars": {
       "GITHUB_TOKEN": "..."
     }

@@ -24,8 +24,11 @@ from src.worker.engine import (
     _build_agent_command,
     _extract_codex_reasoning_line,
     _find_default_pre_job_setup_command,
+    _extract_github_login,
     _is_codex_json_command,
     _load_qa_evidence_from_tracker,
+    _normalize_pr_reviewer_email,
+    _resolve_github_reviewer_login_by_email,
     _resolve_pre_job_setup_commands,
     _resolve_pre_job_setup_timeout_seconds,
     _strip_self_job_submission_env,
@@ -412,3 +415,46 @@ def test_build_pr_body_includes_qa_evidence_section() -> None:
     assert "Source: `.devjob_tracker.md`" in body
     assert "- `pytest -q` -> PASS" in body
     assert "**Job:** `job-123` | **Project:** `proj-a` | **Branch:** `worker/job-123`" in body
+
+
+def test_normalize_pr_reviewer_email_returns_lowercased_value() -> None:
+    assert _normalize_pr_reviewer_email("  ReViewer@Example.COM ") == "reviewer@example.com"
+    assert _normalize_pr_reviewer_email("") is None
+    assert _normalize_pr_reviewer_email(None) is None
+
+
+def test_extract_github_login_accepts_valid_handle() -> None:
+    assert _extract_github_login("octocat\n") == "octocat"
+    assert _extract_github_login("invalid login") is None
+    assert _extract_github_login("null") is None
+
+
+def test_resolve_github_reviewer_login_by_email_queries_gh_api(mocker) -> None:
+    run_cmd = mocker.Mock(return_value="octocat\n")
+    commands_ran: list[str] = []
+
+    login = _resolve_github_reviewer_login_by_email(
+        "reviewer@example.com",
+        run_cmd=run_cmd,
+        workspace_dir="/tmp/work",
+        job_id="job-123",
+        env={"GITHUB_TOKEN": "token"},
+        commands_ran=commands_ran,
+    )
+
+    assert login == "octocat"
+    run_cmd.assert_called_once_with(
+        [
+            "gh",
+            "api",
+            "search/users",
+            "-f",
+            "q=reviewer@example.com in:email",
+            "--jq",
+            '.items[0].login // ""',
+        ],
+        cwd="/tmp/work",
+        job_id="job-123",
+        env={"GITHUB_TOKEN": "token"},
+        commands_ran=commands_ran,
+    )

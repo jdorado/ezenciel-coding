@@ -64,6 +64,7 @@ _RATE_LIMIT_MARKERS = (
 )
 
 _IMPLEMENT_PROMPT = "Please implement the requirements in PRD.md. Make sure to test your code."
+_GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
@@ -166,6 +167,52 @@ def _extract_pr_url(output: str) -> Optional[str]:
         if line.startswith("https://github.com/") and "/pull/" in line:
             return line
     return None
+
+
+def _normalize_pr_reviewer_email(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _extract_github_login(value: str) -> Optional[str]:
+    text = value.strip()
+    if not text:
+        return None
+    candidate = text.splitlines()[-1].strip()
+    if not candidate or candidate.lower() == "null":
+        return None
+    if not _GITHUB_LOGIN_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
+def _resolve_github_reviewer_login_by_email(
+    reviewer_email: str,
+    *,
+    run_cmd: Callable[..., str],
+    workspace_dir: str,
+    job_id: str,
+    env: dict[str, str],
+    commands_ran: list[str],
+) -> Optional[str]:
+    lookup_output = run_cmd(
+        [
+            "gh",
+            "api",
+            "search/users",
+            "-f",
+            f"q={reviewer_email} in:email",
+            "--jq",
+            '.items[0].login // ""',
+        ],
+        cwd=workspace_dir,
+        job_id=job_id,
+        env=env,
+        commands_ran=commands_ran,
+    )
+    return _extract_github_login(lookup_output)
 
 
 def _normalize_markdown_header(value: str) -> str:
@@ -581,6 +628,7 @@ class WorkerEngine:
 
         target_branch = job.get("target_branch") or "main"
         job_branch = f"worker/{job_id[:8]}"
+        reviewer_email = _normalize_pr_reviewer_email(project.get("pr_reviewer_email"))
 
         workspaces_dir = _resolve_dir(settings.workspaces_dir)
         workspace_dir = os.path.join(workspaces_dir, job["project_id"])
@@ -788,6 +836,36 @@ class WorkerEngine:
                     commands_ran=commands_ran,
                 )
                 pr_url = _extract_pr_url(pr_output)
+                if pr_url and reviewer_email:
+                    reviewer_login: Optional[str] = None
+                    try:
+                        reviewer_login = _resolve_github_reviewer_login_by_email(
+                            reviewer_email,
+                            run_cmd=self._run_cmd,
+                            workspace_dir=workspace_dir,
+                            job_id=job_id,
+                            env=push_env,
+                            commands_ran=commands_ran,
+                        )
+                    except Exception as exc:
+                        self._append_log(job_id, f"Reviewer lookup failed (non-fatal): {exc}")
+
+                    if reviewer_login:
+                        try:
+                            self._run_cmd(
+                                ["gh", "pr", "edit", pr_url, "--add-reviewer", reviewer_login],
+                                cwd=workspace_dir,
+                                job_id=job_id,
+                                env=push_env,
+                                commands_ran=commands_ran,
+                            )
+                        except Exception as exc:
+                            self._append_log(job_id, f"PR reviewer request failed (non-fatal): {exc}")
+                    else:
+                        self._append_log(
+                            job_id,
+                            f"No GitHub user found for reviewer email '{reviewer_email}' — skipping reviewer request.",
+                        )
             except Exception as exc:
                 self._append_log(job_id, f"PR creation failed (non-fatal): {exc}")
         else:
