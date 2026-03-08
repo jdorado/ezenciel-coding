@@ -5,7 +5,7 @@ description = "Standalone Generic Dev Worker Service"
 authors = [
     {name = "Author",email = "author@example.com"}
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi (>=0.129.0,<0.130.0)",
     "uvicorn[standard] (>=0.41.0,<0.42.0)",

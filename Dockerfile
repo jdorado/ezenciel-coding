@@ -1,5 +1,5 @@
-# Updated: 2026-03-08 (install build toolchain required by project pre-setup poetry installs)
-FROM python:3.14-slim
+# Updated: 2026-03-08 (align worker runtime with target repos; keep build deps for C extensions)
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1 \
@@ -15,6 +15,7 @@ RUN set -euo pipefail \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential \
+      libffi-dev \
       git \
       openssh-client \
       curl \

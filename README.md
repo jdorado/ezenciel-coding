@@ -5,7 +5,7 @@ REST API + worker that runs AI coding agents (codex, gemini, claude) against you
 
 Submit a PRD → agent clones repo, implements it, commits, pushes, opens PR.
 
-**Supported project types:** Python/FastAPI, Next.js. Agents handle dependency installation — the container ships with Python 3.13 and Node 22.
+**Supported project types:** Python/FastAPI, Next.js. Agents handle dependency installation — the container ships with Python 3.11 and Node.js.
 
 ## Setup
 
