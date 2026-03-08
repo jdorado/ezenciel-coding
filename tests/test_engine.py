@@ -448,6 +448,8 @@ def test_resolve_github_reviewer_login_by_email_queries_gh_api(mocker) -> None:
             "gh",
             "api",
             "search/users",
+            "--method",
+            "GET",
             "-f",
             "q=reviewer@example.com in:email",
             "--jq",

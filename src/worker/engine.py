@@ -202,6 +202,8 @@ def _resolve_github_reviewer_login_by_email(
             "gh",
             "api",
             "search/users",
+            "--method",
+            "GET",
             "-f",
             f"q={reviewer_email} in:email",
             "--jq",
