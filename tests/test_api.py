@@ -179,6 +179,7 @@ def test_register_project_success() -> None:
         "pre_job_setup_command": "poetry install --no-root --no-ansi",
         "pre_job_setup_commands": ["poetry run baml-cli generate --from baml_src"],
         "pre_job_setup_timeout_seconds": 1200,
+        "pr_reviewer_login": "test",
         "pr_reviewer_email": "reviewer@example.com",
         "env_vars": {"GITHUB_TOKEN": "token123"},
     }
@@ -194,6 +195,7 @@ def test_register_project_success() -> None:
     assert data["pre_job_setup_command"] == payload["pre_job_setup_command"]
     assert data["pre_job_setup_commands"] == payload["pre_job_setup_commands"]
     assert data["pre_job_setup_timeout_seconds"] == payload["pre_job_setup_timeout_seconds"]
+    assert data["pr_reviewer_login"] == payload["pr_reviewer_login"]
     assert data["pr_reviewer_email"] == payload["pr_reviewer_email"]
     assert "env_vars" not in data
     assert "callback_url" not in data
@@ -279,6 +281,18 @@ def test_register_project_validation_rejects_invalid_reviewer_email() -> None:
     assert response.status_code == 422
 
 
+def test_register_project_validation_rejects_invalid_reviewer_login() -> None:
+    payload = {
+        "project_id": "project-api-invalid-reviewer-login",
+        "repository_url": "https://github.com/example/project-api-invalid-reviewer-login.git",
+        "target_branch": "main",
+        "cli_client": "codex",
+        "pr_reviewer_login": "invalid login",
+    }
+    response = client.post("/api/v1/projects", json=payload, headers=_headers())
+    assert response.status_code == 422
+
+
 def test_register_project_mongo_persists_reviewer_email(monkeypatch) -> None:
     fake_client = mongomock.MongoClient()
     monkeypatch.setattr(mongo_module, "MongoClient", lambda *args, **kwargs: fake_client)
@@ -292,16 +306,19 @@ def test_register_project_mongo_persists_reviewer_email(monkeypatch) -> None:
         "repository_url": "https://github.com/example/project-api-mongo.git",
         "target_branch": "main",
         "cli_client": "codex",
+        "pr_reviewer_login": "octocat",
         "pr_reviewer_email": "mongo-reviewer@example.com",
     }
     response = client.post("/api/v1/projects", json=payload, headers=_headers())
     assert response.status_code == 201
     data = response.json()
+    assert data["pr_reviewer_login"] == payload["pr_reviewer_login"]
     assert data["pr_reviewer_email"] == payload["pr_reviewer_email"]
 
     db = get_mongo_db()
     doc = db["projects"].find_one({"project_id": payload["project_id"]})
     assert doc is not None
+    assert doc["pr_reviewer_login"] == payload["pr_reviewer_login"]
     assert doc["pr_reviewer_email"] == payload["pr_reviewer_email"]
 
     settings.mongodb_uri = original_uri

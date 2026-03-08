@@ -91,6 +91,7 @@ class ProjectRegisterRequest(BaseModel):
     pre_job_setup_command: Optional[str] = None
     pre_job_setup_commands: Optional[List[str]] = None
     pre_job_setup_timeout_seconds: Optional[int] = None
+    pr_reviewer_login: Optional[str] = None
     pr_reviewer_email: Optional[str] = None
     env_vars: Dict[str, str] = Field(default_factory=dict)
 
@@ -114,6 +115,18 @@ class ProjectRegisterRequest(BaseModel):
         if not value.strip():
             raise ValueError("target_branch must be non-empty")
         return value.strip()
+
+    @field_validator("pr_reviewer_login")
+    @classmethod
+    def validate_pr_reviewer_login(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if not re.fullmatch(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$", normalized):
+            raise ValueError("pr_reviewer_login must be a valid GitHub login")
+        return normalized
 
     @field_validator("pr_reviewer_email")
     @classmethod
@@ -140,6 +153,7 @@ class ProjectResponse(BaseModel):
     pre_job_setup_command: Optional[str] = None
     pre_job_setup_commands: Optional[List[str]] = None
     pre_job_setup_timeout_seconds: Optional[int] = None
+    pr_reviewer_login: Optional[str] = None
     pr_reviewer_email: Optional[str] = None
 
 
@@ -210,6 +224,8 @@ def _build_project_config_payload(request: ProjectRegisterRequest) -> Dict[str, 
         payload["pre_job_setup_commands"] = request.pre_job_setup_commands
     if request.pre_job_setup_timeout_seconds is not None:
         payload["pre_job_setup_timeout_seconds"] = request.pre_job_setup_timeout_seconds
+    if request.pr_reviewer_login is not None:
+        payload["pr_reviewer_login"] = request.pr_reviewer_login
     if request.pr_reviewer_email is not None:
         payload["pr_reviewer_email"] = request.pr_reviewer_email
     return payload
@@ -228,6 +244,7 @@ def _build_project_response(project_id: str, payload: Dict[str, Any]) -> Project
         pre_job_setup_command=payload.get("pre_job_setup_command"),
         pre_job_setup_commands=payload.get("pre_job_setup_commands"),
         pre_job_setup_timeout_seconds=payload.get("pre_job_setup_timeout_seconds"),
+        pr_reviewer_login=payload.get("pr_reviewer_login"),
         pr_reviewer_email=payload.get("pr_reviewer_email"),
     )
 

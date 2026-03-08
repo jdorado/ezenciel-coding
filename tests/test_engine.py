@@ -28,6 +28,7 @@ from src.worker.engine import (
     _is_codex_json_command,
     _load_qa_evidence_from_tracker,
     _normalize_pr_reviewer_email,
+    _normalize_pr_reviewer_login,
     _resolve_github_reviewer_login_by_email,
     _resolve_pre_job_setup_commands,
     _resolve_pre_job_setup_timeout_seconds,
@@ -421,6 +422,13 @@ def test_normalize_pr_reviewer_email_returns_lowercased_value() -> None:
     assert _normalize_pr_reviewer_email("  ReViewer@Example.COM ") == "reviewer@example.com"
     assert _normalize_pr_reviewer_email("") is None
     assert _normalize_pr_reviewer_email(None) is None
+
+
+def test_normalize_pr_reviewer_login_accepts_github_handle() -> None:
+    assert _normalize_pr_reviewer_login("octocat") == "octocat"
+    assert _normalize_pr_reviewer_login("bad login") is None
+    assert _normalize_pr_reviewer_login("") is None
+    assert _normalize_pr_reviewer_login(None) is None
 
 
 def test_extract_github_login_accepts_valid_handle() -> None:

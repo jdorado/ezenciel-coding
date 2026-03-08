@@ -176,6 +176,17 @@ def _normalize_pr_reviewer_email(value: Any) -> Optional[str]:
     return normalized or None
 
 
+def _normalize_pr_reviewer_login(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if not _GITHUB_LOGIN_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
 def _extract_github_login(value: str) -> Optional[str]:
     text = value.strip()
     if not text:
@@ -631,6 +642,7 @@ class WorkerEngine:
         target_branch = job.get("target_branch") or "main"
         job_branch = f"worker/{job_id[:8]}"
         reviewer_email = _normalize_pr_reviewer_email(project.get("pr_reviewer_email"))
+        reviewer_login_config = _normalize_pr_reviewer_login(project.get("pr_reviewer_login"))
 
         workspaces_dir = _resolve_dir(settings.workspaces_dir)
         workspace_dir = os.path.join(workspaces_dir, job["project_id"])
@@ -838,19 +850,22 @@ class WorkerEngine:
                     commands_ran=commands_ran,
                 )
                 pr_url = _extract_pr_url(pr_output)
-                if pr_url and reviewer_email:
+                if pr_url and (reviewer_login_config or reviewer_email):
                     reviewer_login: Optional[str] = None
-                    try:
-                        reviewer_login = _resolve_github_reviewer_login_by_email(
-                            reviewer_email,
-                            run_cmd=self._run_cmd,
-                            workspace_dir=workspace_dir,
-                            job_id=job_id,
-                            env=push_env,
-                            commands_ran=commands_ran,
-                        )
-                    except Exception as exc:
-                        self._append_log(job_id, f"Reviewer lookup failed (non-fatal): {exc}")
+                    if reviewer_login_config:
+                        reviewer_login = reviewer_login_config
+                    elif reviewer_email:
+                        try:
+                            reviewer_login = _resolve_github_reviewer_login_by_email(
+                                reviewer_email,
+                                run_cmd=self._run_cmd,
+                                workspace_dir=workspace_dir,
+                                job_id=job_id,
+                                env=push_env,
+                                commands_ran=commands_ran,
+                            )
+                        except Exception as exc:
+                            self._append_log(job_id, f"Reviewer lookup failed (non-fatal): {exc}")
 
                     if reviewer_login:
                         try:
