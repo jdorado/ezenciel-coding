@@ -1,4 +1,4 @@
-# Updated: 2026-02-23
+# Updated: 2026-03-08 (install build toolchain required by project pre-setup poetry installs)
 FROM python:3.14-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,6 +14,7 @@ WORKDIR /app
 RUN set -euo pipefail \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+      build-essential \
       git \
       openssh-client \
       curl \
