@@ -23,3 +23,4 @@ workspaces/
 projects/*
 !projects/dummy-repo/
 projects/dummy-repo/.env.sample
+.DS_Store
